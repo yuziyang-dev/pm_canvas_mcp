@@ -1,0 +1,20 @@
+{
+  "name": "pm-canvas-mcp-server-kit",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Installable PRD/PM Canvas MCP server kit for Cursor, Claude, Codex and other MCP clients.",
+  "scripts": {
+    "install:kit": "node scripts/install.mjs",
+    "healthcheck": "node scripts/healthcheck.mjs",
+    "print-config": "node scripts/print-config.mjs",
+    "mcp:canvas": "node mcp/canvas-mcp-server.mjs"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.76"
+  }
+}
