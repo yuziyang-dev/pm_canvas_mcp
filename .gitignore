@@ -1,0 +1,16 @@
+node_modules/
+dist/
+dist-canvas/
+data/
+*.sqlite
+*.sqlite-*
+*.db
+*.zip
+.env
+.env.*
+.DS_Store
+._*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

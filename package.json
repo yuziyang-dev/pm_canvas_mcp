@@ -1,0 +1,23 @@
+{
+  "name": "prd-canvas-runner",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "dev:local": "node server/index.mjs",
+    "mcp:canvas": "node mcp/canvas-mcp-server.mjs",
+    "build": "vite build",
+    "build:canvas": "vite build --config vite.canvas.config.js && cp dist-canvas/canvas.html dist-canvas/index.html && find dist-canvas -name '._*' -delete",
+    "package:canvas": "npm run build:canvas && rm -f design-canvas-standalone.zip && zip -qr design-canvas-standalone.zip dist-canvas -x '*/._*' '._*'",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@vitejs/plugin-react": "^5.1.1",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "vite": "^8.0.16",
+    "zod": "^3.25.76"
+  }
+}
