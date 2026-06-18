@@ -9,9 +9,15 @@ const kitRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const serverPath = resolve(kitRoot, "mcp/canvas-mcp-server.mjs");
 const databasePath = resolve(kitRoot, "data/prd-canvas.sqlite");
 const storageRoot = resolve(kitRoot, "storage");
+const apiToken = String(process.env.PRD_CANVAS_API_TOKEN || "").trim();
+const ownerUsername = String(process.env.PRD_CANVAS_MCP_OWNER_USERNAME || "").trim();
 
 mkdirSync(dirname(databasePath), { recursive: true });
 mkdirSync(storageRoot, { recursive: true });
+
+if (apiToken && !ownerUsername) {
+  throw new Error("Central API mode requires PRD_CANVAS_MCP_OWNER_USERNAME. It must be an account already created in the Canvas PRD web app.");
+}
 
 const client = new Client({ name: "pm-canvas-mcp-healthcheck", version: "0.1.0" });
 const transport = new StdioClientTransport({
@@ -20,6 +26,8 @@ const transport = new StdioClientTransport({
   env: {
     ...process.env,
     PRD_CANVAS_BASE_URL: process.env.PRD_CANVAS_BASE_URL || "http://127.0.0.1:5180",
+    PRD_CANVAS_API_TOKEN: apiToken,
+    PRD_CANVAS_MCP_OWNER_USERNAME: ownerUsername,
     DATABASE_PATH: databasePath,
     STORAGE_ROOT: storageRoot,
   },
@@ -46,7 +54,17 @@ try {
   if (users.isError) {
     throw new Error(users.content?.[0]?.text || "prd_canvas_list_users failed");
   }
+  if (apiToken) {
+    const projects = await client.callTool({
+      name: "prd_canvas_list_projects",
+      arguments: { scope: "mine", owner_username: ownerUsername, response_format: "json" },
+    });
+    if (projects.isError) {
+      throw new Error(projects.content?.[0]?.text || "prd_canvas_list_projects failed in central API mode");
+    }
+  }
   console.log("PM Canvas MCP healthcheck passed.");
+  console.log(apiToken ? "Mode: central Canvas PRD API" : "Mode: local/offline SQLite");
   console.log(`Tools: ${toolNames.length}`);
   console.log(toolNames.map((name) => `- ${name}`).join("\n"));
 } finally {

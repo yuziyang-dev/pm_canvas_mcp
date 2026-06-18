@@ -12,8 +12,12 @@ const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dbPath = resolve(rootDir, process.env.DATABASE_PATH || "data/prd-canvas.sqlite");
 const storageRoot = resolve(process.env.STORAGE_ROOT || "/Volumes/ENERJOY-PUBLIC-DES/prd-canvas-storage");
 const baseUrl = (process.env.PRD_CANVAS_BASE_URL || `http://127.0.0.1:${process.env.PORT || 5180}`).replace(/\/$/, "");
+const apiToken = String(process.env.PRD_CANVAS_API_TOKEN || "").trim();
+const useRemoteApi = !!apiToken;
 const htmlProtoRatio = 844 / 390;
-const nodeWidth = 320;
+const nodeWidth = 180;
+const nodeInset = 9;
+const nodeMediaWidth = nodeWidth - nodeInset * 2 - 2;
 const rowGap = 420;
 const colGap = 520;
 const characterLimit = 28000;
@@ -30,81 +34,86 @@ const checklist = [
   "需求冲突：与现有弹窗 / 功能冲突排查 + 处理策略",
 ];
 
-mkdirSync(dirname(dbPath), { recursive: true });
-mkdirSync(storageRoot, { recursive: true });
-mkdirSync(join(storageRoot, "uploads"), { recursive: true });
-mkdirSync(join(storageRoot, "exports"), { recursive: true });
+let db = null;
+let stmt = null;
 
-const db = new DatabaseSync(dbPath);
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
+if (!useRemoteApi) {
+  mkdirSync(dirname(dbPath), { recursive: true });
+  mkdirSync(storageRoot, { recursive: true });
+  mkdirSync(join(storageRoot, "uploads"), { recursive: true });
+  mkdirSync(join(storageRoot, "exports"), { recursive: true });
 
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    username TEXT NOT NULL UNIQUE,
-    display_name TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
-    salt TEXT NOT NULL,
-    created_at TEXT NOT NULL
-  );
+  db = new DatabaseSync(dbPath);
+  db.exec(`
+    PRAGMA journal_mode = WAL;
+    PRAGMA foreign_keys = ON;
 
-  CREATE TABLE IF NOT EXISTS sessions (
-    token TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL
-  );
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      display_name TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      salt TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
 
-  CREATE TABLE IF NOT EXISTS designs (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    product TEXT NOT NULL,
-    status TEXT NOT NULL,
-    owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    data_json TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    submitted_at TEXT
-  );
+    CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
 
-  CREATE TABLE IF NOT EXISTS files (
-    id TEXT PRIMARY KEY,
-    design_id TEXT,
-    owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL,
-    original_name TEXT NOT NULL,
-    mime_type TEXT NOT NULL,
-    relative_path TEXT NOT NULL,
-    size INTEGER NOT NULL,
-    created_at TEXT NOT NULL
-  );
-`);
+    CREATE TABLE IF NOT EXISTS designs (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      product TEXT NOT NULL,
+      status TEXT NOT NULL,
+      owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      data_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      submitted_at TEXT
+    );
 
-const stmt = {
-  listUsers: db.prepare("SELECT id, username, display_name, created_at FROM users ORDER BY datetime(created_at) ASC"),
-  userByUsername: db.prepare("SELECT id, username, display_name, created_at FROM users WHERE lower(username) = lower(?)"),
-  userById: db.prepare("SELECT id, username, display_name, created_at FROM users WHERE id = ?"),
-  insertUser: db.prepare("INSERT INTO users (id, username, display_name, password_hash, salt, created_at) VALUES (?, ?, ?, ?, ?, ?)"),
-  listDesigns: db.prepare(`
-    SELECT designs.id, designs.title, designs.product, designs.status, designs.owner_id, designs.created_at,
-           designs.updated_at, designs.submitted_at, users.username AS owner_username, users.display_name AS owner_name,
-           designs.data_json
-    FROM designs
-    JOIN users ON users.id = designs.owner_id
-    ORDER BY datetime(designs.updated_at) DESC
-  `),
-  getDesign: db.prepare(`
-    SELECT designs.*, users.username AS owner_username, users.display_name AS owner_name
-    FROM designs
-    JOIN users ON users.id = designs.owner_id
-    WHERE designs.id = ?
-  `),
-  insertDesign: db.prepare("INSERT INTO designs (id, title, product, status, owner_id, data_json, created_at, updated_at, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"),
-  updateDesign: db.prepare("UPDATE designs SET title = ?, product = ?, status = ?, data_json = ?, updated_at = ?, submitted_at = ? WHERE id = ?"),
-  insertFile: db.prepare("INSERT INTO files (id, design_id, owner_id, kind, original_name, mime_type, relative_path, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"),
-  listFilesForDesign: db.prepare("SELECT * FROM files WHERE design_id = ? ORDER BY datetime(created_at) DESC"),
-};
+    CREATE TABLE IF NOT EXISTS files (
+      id TEXT PRIMARY KEY,
+      design_id TEXT,
+      owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,
+      original_name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      relative_path TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    );
+  `);
+
+  stmt = {
+    listUsers: db.prepare("SELECT id, username, display_name, created_at FROM users ORDER BY datetime(created_at) ASC"),
+    userByUsername: db.prepare("SELECT id, username, display_name, created_at FROM users WHERE lower(username) = lower(?)"),
+    userById: db.prepare("SELECT id, username, display_name, created_at FROM users WHERE id = ?"),
+    insertUser: db.prepare("INSERT INTO users (id, username, display_name, password_hash, salt, created_at) VALUES (?, ?, ?, ?, ?, ?)"),
+    listDesigns: db.prepare(`
+      SELECT designs.id, designs.title, designs.product, designs.status, designs.owner_id, designs.created_at,
+             designs.updated_at, designs.submitted_at, users.username AS owner_username, users.display_name AS owner_name,
+             designs.data_json
+      FROM designs
+      JOIN users ON users.id = designs.owner_id
+      ORDER BY datetime(designs.updated_at) DESC
+    `),
+    getDesign: db.prepare(`
+      SELECT designs.*, users.username AS owner_username, users.display_name AS owner_name
+      FROM designs
+      JOIN users ON users.id = designs.owner_id
+      WHERE designs.id = ?
+    `),
+    insertDesign: db.prepare("INSERT INTO designs (id, title, product, status, owner_id, data_json, created_at, updated_at, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+    updateDesign: db.prepare("UPDATE designs SET title = ?, product = ?, status = ?, data_json = ?, updated_at = ?, submitted_at = ? WHERE id = ?"),
+    insertFile: db.prepare("INSERT INTO files (id, design_id, owner_id, kind, original_name, mime_type, relative_path, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+    listFilesForDesign: db.prepare("SELECT * FROM files WHERE design_id = ? ORDER BY datetime(created_at) DESC"),
+  };
+}
 
 const generationJobs = new Map();
 
@@ -322,7 +331,16 @@ function dataUrlToBuffer(dataUrl) {
   return { buffer, mimeType };
 }
 
+function normalizeHtmlPrototypeRatio(value) {
+  const ratio = Number(value);
+  if (!Number.isFinite(ratio) || ratio <= 0) return htmlProtoRatio;
+  const invertedDefault = 1 / htmlProtoRatio;
+  if (ratio < 1 && Math.abs(ratio - invertedDefault) < 0.08) return htmlProtoRatio;
+  return Math.min(4, Math.max(0.25, ratio));
+}
+
 function writeManagedFile({ ownerId, designId = null, kind = "asset", originalName = "file", mimeType = "application/octet-stream", buffer }) {
+  if (useRemoteApi) throw new Error("远程 API 模式下不能写本地文件，请使用 remoteUploadFile。");
   const fileId = randomUUID();
   const safeName = sanitizeFileName(originalName);
   const safeKind = String(kind || "asset").replace(/[^\w-]/g, "_");
@@ -346,6 +364,196 @@ function writeManagedFile({ ownerId, designId = null, kind = "asset", originalNa
     size: buffer.length,
     createdAt: created,
   };
+}
+
+function activeOwnerUsername(ownerUsername) {
+  const configured = String(process.env.PRD_CANVAS_MCP_OWNER_USERNAME || "").trim();
+  if (useRemoteApi) return configured;
+  return String(ownerUsername || configured || "").trim();
+}
+
+function absoluteApiUrl(path) {
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function withAbsoluteFileUrl(file) {
+  if (!file || typeof file !== "object") return file;
+  return {
+    ...file,
+    absoluteUrl: file.absoluteUrl || (file.url ? absoluteApiUrl(file.url) : undefined),
+  };
+}
+
+async function apiRequest(path, { method = "GET", body = null, ownerUsername = "", allowNoOwner = false } = {}) {
+  if (!apiToken) throw new Error("远程 API 模式需要设置 PRD_CANVAS_API_TOKEN。");
+  const owner = activeOwnerUsername(ownerUsername);
+  if (!owner && !allowNoOwner) {
+    throw new Error("远程 API 模式需要设置 PRD_CANVAS_MCP_OWNER_USERNAME，值必须是 Canvas PRD 网页里已经创建过的账号。");
+  }
+  const headers = {
+    Authorization: `Bearer ${apiToken}`,
+    Accept: "application/json",
+  };
+  if (owner) headers["X-Canvas-Owner-Username"] = owner;
+  if (body !== null) headers["Content-Type"] = "application/json; charset=utf-8";
+  const res = await fetch(absoluteApiUrl(path), {
+    method,
+    headers,
+    body: body === null ? undefined : JSON.stringify(body),
+  });
+  const text = await res.text();
+  let json = null;
+  if (text) {
+    try { json = JSON.parse(text); } catch {}
+  }
+  if (!res.ok) {
+    const message = json?.error || text || `${res.status} ${res.statusText}`;
+    throw new Error(`Canvas PRD API ${method} ${path} 失败：${message}`);
+  }
+  return json ?? {};
+}
+
+function remoteDesignSummary(design, viewer = null) {
+  return {
+    id: design.id,
+    title: design.title || "未命名设计单",
+    product: normalizeProduct(design.product),
+    status: design.status === "done" ? "done" : "writing",
+    ownerId: design.ownerId,
+    ownerUsername: design.ownerUsername,
+    ownerName: design.ownerName,
+    createdAt: design.createdAt,
+    updatedAt: design.updatedAt,
+    submittedAt: design.submittedAt || "",
+    pageCount: Number(design.pageCount || 0),
+    canEdit: !!design.canEdit || (!!viewer && design.ownerId === viewer.id),
+    url: `${baseUrl}/canvas.html`,
+    searchText: design.searchText || "",
+  };
+}
+
+async function remoteListUsers() {
+  const data = await apiRequest("/api/mcp/users", { allowNoOwner: true });
+  return (data.users || []).map((user) => ({
+    id: user.id,
+    username: user.username,
+    displayName: user.displayName,
+    createdAt: user.createdAt,
+  }));
+}
+
+async function remoteResolveOwner(ownerUsername) {
+  const username = activeOwnerUsername(ownerUsername);
+  if (!username) {
+    throw new Error("请在 MCP 配置里设置 PRD_CANVAS_MCP_OWNER_USERNAME，值为你在 Canvas PRD 网页创建的账号。");
+  }
+  const users = await remoteListUsers();
+  const owner = users.find((user) => String(user.username).toLowerCase() === username.toLowerCase());
+  if (!owner) {
+    throw new Error(`中心服务里找不到账号「${username}」。请先打开 Canvas PRD 网页注册该账号，再重启 MCP 客户端。`);
+  }
+  return owner;
+}
+
+async function remoteListDesigns({ scope = "all", owner_username = "", product = "", status = "", limit = 20, offset = 0 } = {}) {
+  const owner = await remoteResolveOwner(owner_username);
+  const data = await apiRequest(`/api/designs?scope=${encodeURIComponent(scope)}`, { ownerUsername: owner.username });
+  let rows = (data.designs || []).map((design) => remoteDesignSummary(design, owner));
+  if (product) rows = rows.filter((row) => row.product === product);
+  if (status) rows = rows.filter((row) => row.status === status);
+  const total = rows.length;
+  rows = rows.slice(offset, offset + limit);
+  return { owner, total, rows };
+}
+
+async function remoteCreateDesign(ownerUsername, doc) {
+  const owner = await remoteResolveOwner(ownerUsername);
+  const data = await apiRequest("/api/designs", { method: "POST", ownerUsername: owner.username, body: { doc } });
+  return {
+    owner,
+    row: remoteDesignSummary(data.design, owner),
+    doc: data.doc,
+  };
+}
+
+async function remoteLoadDesign(projectId, ownerUsername = "") {
+  const owner = await remoteResolveOwner(ownerUsername);
+  const data = await apiRequest(`/api/designs/${encodeURIComponent(projectId)}`, { ownerUsername: owner.username });
+  return {
+    owner,
+    row: remoteDesignSummary(data.design, owner),
+    doc: data.doc,
+  };
+}
+
+async function remoteSaveDesign(projectId, doc, ownerUsername = "") {
+  const owner = await remoteResolveOwner(ownerUsername);
+  const data = await apiRequest(`/api/designs/${encodeURIComponent(projectId)}`, {
+    method: "PUT",
+    ownerUsername: owner.username,
+    body: { doc },
+  });
+  return {
+    owner,
+    row: remoteDesignSummary(data.design, owner),
+    doc: data.doc,
+  };
+}
+
+async function remoteUploadFile({ ownerUsername = "", designId = null, kind = "asset", originalName = "file", mimeType = "application/octet-stream", buffer = null, text = null, dataUrl = null }) {
+  const owner = await remoteResolveOwner(ownerUsername);
+  const body = {
+    designId,
+    kind,
+    name: originalName,
+    mimeType,
+  };
+  if (dataUrl) body.dataUrl = dataUrl;
+  else if (typeof text === "string") body.text = text;
+  else if (buffer) body.dataUrl = `data:${mimeType};base64,${Buffer.from(buffer).toString("base64")}`;
+  else throw new Error("远程上传缺少文件内容。");
+  const data = await apiRequest("/api/files", {
+    method: "POST",
+    ownerUsername: owner.username,
+    body,
+  });
+  return withAbsoluteFileUrl(data.file);
+}
+
+async function remoteSaveMarkdownExport(projectId, markdown, ownerUsername = "") {
+  const owner = await remoteResolveOwner(ownerUsername);
+  const data = await apiRequest(`/api/designs/${encodeURIComponent(projectId)}/export-md`, {
+    method: "POST",
+    ownerUsername: owner.username,
+    body: { markdown },
+  });
+  return data?.url ? { ...data, absoluteUrl: absoluteApiUrl(data.url) } : data;
+}
+
+async function remoteRecordActivity({ ownerUsername = "", designId = "", phase = "work", message = "", detail = {}, progress = null, status = "running" } = {}) {
+  if (!useRemoteApi) return null;
+  try {
+    return await apiRequest("/api/mcp/activity", {
+      method: "POST",
+      ownerUsername,
+      body: {
+        designId,
+        phase,
+        message,
+        detail,
+        progress,
+        status,
+      },
+    });
+  } catch (error) {
+    console.error(`Canvas PRD MCP activity failed: ${error?.message || error}`);
+    return null;
+  }
+}
+
+function outputDesignSummary(row, viewer = null) {
+  return useRemoteApi ? row : summarizeDesign(row, viewer);
 }
 
 function htmlToText(html) {
@@ -555,6 +763,324 @@ function nodeSummary(node) {
   };
 }
 
+function estimateWrappedLines(value, maxLines, charsPerLine) {
+  const text = htmlToText(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return 0;
+  return Math.max(1, Math.min(maxLines, Math.ceil(text.length / charsPerLine)));
+}
+
+function estimateNodeHeight(node) {
+  const titleLines = estimateWrappedLines(node.name || "未命名页面", 2, 13) || 1;
+  const descLines = estimateWrappedLines(node.note || node.expGoal || "", 3, 16);
+  const titleHeight = 18 + titleLines * 18 + 14;
+  const descHeight = descLines ? 14 + descLines * 15 + 12 : 18;
+  const rawRatio = Number(node.protoRatio);
+  const ratio = node.proto
+    ? (node.protoKind === "html" ? normalizeHtmlPrototypeRatio(rawRatio) : (Number.isFinite(rawRatio) && rawRatio > 0 ? rawRatio : 0.55))
+    : null;
+  const mediaHeight = node.proto ? Math.max(70, nodeMediaWidth * ratio) : 70;
+  return titleHeight + mediaHeight + descHeight;
+}
+
+function layeredLayout(items, edges, gapX = 200, gapY = 70, startX = 80, startY = 80) {
+  if (!items.length) return {};
+  const byId = Object.fromEntries(items.map((item) => [item.id, item]));
+  const outAdj = {};
+  const inDeg = {};
+  const preds = {};
+  items.forEach((item) => {
+    outAdj[item.id] = [];
+    inDeg[item.id] = 0;
+    preds[item.id] = [];
+  });
+  (edges || []).forEach((edge) => {
+    if (!byId[edge.from] || !byId[edge.to] || edge.from === edge.to) return;
+    outAdj[edge.from].push(edge.to);
+    preds[edge.to].push(edge.from);
+    inDeg[edge.to] += 1;
+  });
+
+  const connected = items.filter((item) => outAdj[item.id].length || preds[item.id].length);
+  const isolated = items.filter((item) => !outAdj[item.id].length && !preds[item.id].length);
+  const state = {};
+  const backSet = new Set();
+  function dfs(id) {
+    state[id] = 1;
+    outAdj[id].forEach((to) => {
+      if (state[to] === 1) backSet.add(`${id}>${to}`);
+      else if (!state[to]) dfs(to);
+    });
+    state[id] = 2;
+  }
+  const seedRoots = connected.filter((item) => inDeg[item.id] === 0).map((item) => item.id);
+  (seedRoots.length ? seedRoots : connected.map((item) => item.id)).forEach((id) => {
+    if (!state[id]) dfs(id);
+  });
+
+  const forwardPreds = {};
+  connected.forEach((item) => {
+    forwardPreds[item.id] = [];
+  });
+  (edges || []).forEach((edge) => {
+    if (byId[edge.from] && byId[edge.to] && edge.from !== edge.to && !backSet.has(`${edge.from}>${edge.to}`)) {
+      forwardPreds[edge.to].push(edge.from);
+    }
+  });
+
+  const layer = {};
+  const forwardRoots = connected.filter((item) => forwardPreds[item.id].length === 0).map((item) => item.id);
+  (forwardRoots.length ? forwardRoots : [connected[0]?.id]).forEach((id) => {
+    if (id) layer[id] = 0;
+  });
+  let changed = true;
+  let guard = 0;
+  while (changed && guard++ < items.length + 5) {
+    changed = false;
+    connected.forEach((item) => {
+      const known = forwardPreds[item.id].filter((id) => layer[id] !== undefined);
+      if (!known.length) return;
+      const want = Math.max(...known.map((id) => layer[id])) + 1;
+      if (layer[item.id] === undefined || want > layer[item.id]) {
+        layer[item.id] = want;
+        changed = true;
+      }
+    });
+    connected.forEach((item) => {
+      if (layer[item.id] === undefined && forwardPreds[item.id].length) {
+        layer[item.id] = 0;
+        changed = true;
+      }
+    });
+  }
+  connected.forEach((item) => {
+    if (layer[item.id] === undefined) layer[item.id] = 0;
+  });
+
+  const cols = {};
+  connected.forEach((item) => {
+    (cols[layer[item.id]] = cols[layer[item.id]] || []).push(item.id);
+  });
+  const colKeys = Object.keys(cols).map(Number).sort((a, b) => a - b);
+  const orderIndex = {};
+  colKeys.forEach((layerKey) => {
+    cols[layerKey].forEach((id, index) => {
+      orderIndex[id] = index;
+    });
+  });
+  for (let pass = 0; pass < 4; pass += 1) {
+    colKeys.forEach((layerKey) => {
+      if (layerKey === colKeys[0]) return;
+      cols[layerKey].sort((a, b) => {
+        const av = preds[a].length ? preds[a].reduce((sum, id) => sum + (orderIndex[id] ?? 0), 0) / preds[a].length : orderIndex[a] ?? 0;
+        const bv = preds[b].length ? preds[b].reduce((sum, id) => sum + (orderIndex[id] ?? 0), 0) / preds[b].length : orderIndex[b] ?? 0;
+        return av - bv;
+      });
+      cols[layerKey].forEach((id, index) => {
+        orderIndex[id] = index;
+      });
+    });
+  }
+
+  const pos = {};
+  const colWidths = colKeys.map((layerKey) => Math.max(...cols[layerKey].map((id) => byId[id].w)));
+  let x = startX;
+  colKeys.forEach((layerKey, colIndex) => {
+    let y = startY;
+    cols[layerKey].forEach((id) => {
+      pos[id] = { x, y };
+      y += byId[id].h + gapY;
+    });
+    x += colWidths[colIndex] + gapX;
+  });
+  const colHeights = colKeys.map((layerKey) => {
+    const ids = cols[layerKey];
+    if (!ids?.length) return 0;
+    const last = ids[ids.length - 1];
+    return pos[last].y + byId[last].h - startY;
+  });
+  const maxH = Math.max(0, ...colHeights);
+  colKeys.forEach((layerKey, colIndex) => {
+    const offsetY = (maxH - colHeights[colIndex]) / 2;
+    cols[layerKey].forEach((id) => {
+      pos[id].y += offsetY;
+    });
+  });
+
+  if (isolated.length) {
+    const columns = Math.max(1, Math.min(isolated.length, Math.max(colKeys.length, 4)));
+    const baseY = maxH > 0 ? startY + maxH + 160 : startY;
+    let rowTop = baseY;
+    for (let row = 0; row * columns < isolated.length; row += 1) {
+      const slice = isolated.slice(row * columns, (row + 1) * columns);
+      let rowX = startX;
+      slice.forEach((item) => {
+        pos[item.id] = { x: rowX, y: rowTop };
+        rowX += item.w + gapX;
+      });
+      rowTop += Math.max(...slice.map((item) => item.h)) + gapY;
+    }
+  }
+  return pos;
+}
+
+function computeNodeLayout(nodes, edges, options = {}) {
+  return layeredLayout(
+    nodes.map((node) => ({ id: node.id, w: nodeWidth, h: estimateNodeHeight(node) })),
+    edges,
+    options.gapX ?? 200,
+    options.gapY ?? 70,
+    options.startX ?? 80,
+    options.startY ?? 80,
+  );
+}
+
+function layoutWithGroups(doc, options = {}) {
+  const nodes = Array.isArray(doc.nodes) ? doc.nodes : [];
+  const edges = Array.isArray(doc.edges) ? doc.edges : [];
+  const nodeById = Object.fromEntries(nodes.map((node) => [node.id, node]));
+  const groups = options.preserveGroups === false
+    ? []
+    : (doc.groups || []).map((group) => ({ ...group, nodeIds: (group.nodeIds || []).filter((id) => nodeById[id]) })).filter((group) => group.nodeIds.length);
+  if (!groups.length) return computeNodeLayout(nodes, edges, options);
+
+  const padX = 22;
+  const padTop = 40;
+  const padBottom = 26;
+  const grouped = new Set();
+  groups.forEach((group) => group.nodeIds.forEach((id) => grouped.add(id)));
+
+  const groupInfo = {};
+  groups.forEach((group) => {
+    const subNodes = group.nodeIds.map((id) => nodeById[id]).filter(Boolean);
+    const subEdges = edges.filter((edge) => group.nodeIds.includes(edge.from) && group.nodeIds.includes(edge.to));
+    const localPos = computeNodeLayout(subNodes, subEdges, options);
+    const minX = Math.min(...subNodes.map((node) => localPos[node.id]?.x ?? node.x ?? 0));
+    const minY = Math.min(...subNodes.map((node) => localPos[node.id]?.y ?? node.y ?? 0));
+    const maxX = Math.max(...subNodes.map((node) => (localPos[node.id]?.x ?? node.x ?? 0) + nodeWidth));
+    const maxY = Math.max(...subNodes.map((node) => (localPos[node.id]?.y ?? node.y ?? 0) + estimateNodeHeight(node)));
+    const normalized = {};
+    subNodes.forEach((node) => {
+      normalized[node.id] = {
+        x: (localPos[node.id]?.x ?? node.x ?? 0) - minX,
+        y: (localPos[node.id]?.y ?? node.y ?? 0) - minY,
+      };
+    });
+    groupInfo[group.id] = {
+      normalized,
+      w: (maxX - minX) + padX * 2,
+      h: (maxY - minY) + padTop + padBottom,
+    };
+  });
+
+  const blockByNode = (nodeId) => {
+    const group = groups.find((item) => item.nodeIds.includes(nodeId));
+    return group ? `g:${group.id}` : nodeId;
+  };
+  const items = [];
+  groups.forEach((group) => items.push({ id: `g:${group.id}`, w: groupInfo[group.id].w, h: groupInfo[group.id].h }));
+  nodes.forEach((node) => {
+    if (!grouped.has(node.id)) items.push({ id: node.id, w: nodeWidth, h: estimateNodeHeight(node) });
+  });
+  const topEdges = [];
+  const seen = new Set();
+  edges.forEach((edge) => {
+    if (!nodeById[edge.from] || !nodeById[edge.to]) return;
+    const from = blockByNode(edge.from);
+    const to = blockByNode(edge.to);
+    if (from === to) return;
+    const key = `${from}>${to}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    topEdges.push({ from, to });
+  });
+
+  const topPos = layeredLayout(items, topEdges, options.blockGapX ?? 240, options.blockGapY ?? 100, options.startX ?? 80, options.startY ?? 80);
+  const pos = {};
+  nodes.forEach((node) => {
+    if (!grouped.has(node.id) && topPos[node.id]) pos[node.id] = topPos[node.id];
+  });
+  groups.forEach((group) => {
+    const blockPos = topPos[`g:${group.id}`];
+    const info = groupInfo[group.id];
+    if (!blockPos || !info) return;
+    group.nodeIds.forEach((id) => {
+      if (!nodeById[id]) return;
+      const local = info.normalized[id];
+      pos[id] = { x: blockPos.x + padX + local.x, y: blockPos.y + padTop + local.y };
+    });
+  });
+  return pos;
+}
+
+function sanitizeDocRelations(doc) {
+  const nodeIds = new Set((doc.nodes || []).map((node) => node.id));
+  const beforeEdges = (doc.edges || []).length;
+  doc.edges = (doc.edges || []).filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to) && edge.from !== edge.to);
+  let removedGroupRefs = 0;
+  const beforeGroups = (doc.groups || []).length;
+  doc.groups = (doc.groups || []).map((group) => {
+    const nextIds = (group.nodeIds || []).filter((id) => nodeIds.has(id));
+    removedGroupRefs += (group.nodeIds || []).length - nextIds.length;
+    return { ...group, nodeIds: nextIds };
+  }).filter((group) => group.nodeIds.length);
+  doc.meta = { ...(doc.meta || {}), docOrder: normalizeDocOrder(doc.meta?.docOrder, doc.nodes || []) };
+  return {
+    removedEdges: beforeEdges - doc.edges.length,
+    removedGroupRefs,
+    removedGroups: beforeGroups - doc.groups.length,
+  };
+}
+
+function arrangeDocNodes(doc, options = {}) {
+  if (!Array.isArray(doc.nodes) || !doc.nodes.length) {
+    return { moved: [], total: 0, cleanup: sanitizeDocRelations(doc) };
+  }
+  const cleanup = sanitizeDocRelations(doc);
+  const target = layoutWithGroups(doc, options);
+  const moved = [];
+  doc.nodes = doc.nodes.map((node) => {
+    const pos = target[node.id];
+    if (!pos) return node;
+    const x = Math.round(pos.x);
+    const y = Math.round(pos.y);
+    if (Math.round(Number(node.x || 0)) !== x || Math.round(Number(node.y || 0)) !== y) {
+      moved.push({ id: node.id, name: node.name, from: { x: node.x || 0, y: node.y || 0 }, to: { x, y } });
+    }
+    return { ...node, x, y };
+  });
+  doc.meta = {
+    ...(doc.meta || {}),
+    docOrder: normalizeDocOrder(doc.meta?.docOrder, doc.nodes),
+  };
+  return { moved, total: doc.nodes.length, cleanup };
+}
+
+function deleteNodesFromDoc(doc, ids) {
+  const nodeIds = new Set(ids);
+  if (!nodeIds.size) throw new Error("请提供要删除的节点 ID 或页面名。");
+  const removedNodes = (doc.nodes || []).filter((node) => nodeIds.has(node.id)).map((node) => ({ id: node.id, name: node.name }));
+  if (!removedNodes.length) throw new Error("没有找到可删除的节点。");
+  const removedIdSet = new Set(removedNodes.map((node) => node.id));
+  const beforeEdges = (doc.edges || []).length;
+  doc.nodes = (doc.nodes || []).filter((node) => !removedIdSet.has(node.id));
+  doc.edges = (doc.edges || []).filter((edge) => !removedIdSet.has(edge.from) && !removedIdSet.has(edge.to));
+  const beforeGroups = (doc.groups || []).length;
+  let removedGroupRefs = 0;
+  doc.groups = (doc.groups || []).map((group) => {
+    const nextIds = (group.nodeIds || []).filter((id) => !removedIdSet.has(id));
+    removedGroupRefs += (group.nodeIds || []).length - nextIds.length;
+    return { ...group, nodeIds: nextIds };
+  }).filter((group) => group.nodeIds.length);
+  doc.meta = { ...(doc.meta || {}), docOrder: normalizeDocOrder(doc.meta?.docOrder, doc.nodes) };
+  const cleanup = sanitizeDocRelations(doc);
+  return {
+    removedNodes,
+    removedEdges: beforeEdges - doc.edges.length + cleanup.removedEdges,
+    removedGroupRefs: removedGroupRefs + cleanup.removedGroupRefs,
+    removedGroups: beforeGroups - doc.groups.length + cleanup.removedGroups,
+  };
+}
+
 function designSummaryMarkdown(items, title = "设计单") {
   const lines = [`# ${title}`, ""];
   if (!items.length) {
@@ -626,6 +1152,9 @@ function upsertNode(doc, input) {
     ...(Number.isFinite(input.y) ? { y: input.y } : {}),
     updatedAt: now,
   };
+  if (next.proto && next.protoKind === "html") {
+    next.protoRatio = normalizeHtmlPrototypeRatio(next.protoRatio);
+  }
   if (index >= 0) {
     doc.nodes[index] = next;
   } else {
@@ -757,7 +1286,9 @@ server.registerResource(
     mimeType: "application/json",
   },
   async (uri) => {
-    const projects = stmt.listDesigns.all().map((row) => summarizeDesign(row));
+    const projects = useRemoteApi
+      ? (await remoteListDesigns({ scope: "all", limit: 100, offset: 0 })).rows
+      : stmt.listDesigns.all().map((row) => summarizeDesign(row));
     return {
       contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify({ projects }, null, 2) }],
     };
@@ -768,7 +1299,10 @@ server.registerResource(
   "prd_canvas_project",
   new ResourceTemplate("canvas://projects/{id}", {
     list: async () => ({
-      resources: stmt.listDesigns.all().map((row) => ({
+      resources: (useRemoteApi
+        ? (await remoteListDesigns({ scope: "all", limit: 100, offset: 0 })).rows
+        : stmt.listDesigns.all().map((row) => summarizeDesign(row))
+      ).map((row) => ({
         uri: `canvas://projects/${row.id}`,
         name: row.title,
         description: `${row.product} · ${row.status === "done" ? "已完成" : "编写中"}`,
@@ -782,7 +1316,7 @@ server.registerResource(
     mimeType: "application/json",
   },
   async (uri, variables) => {
-    const { doc } = loadDesign(variables.id);
+    const { doc } = useRemoteApi ? await remoteLoadDesign(variables.id) : loadDesign(variables.id);
     return {
       contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(doc, null, 2) }],
     };
@@ -800,7 +1334,7 @@ registerTool(
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   async ({ response_format }) => {
-    const users = stmt.listUsers.all().map(publicUser);
+    const users = useRemoteApi ? await remoteListUsers() : stmt.listUsers.all().map(publicUser);
     const markdown = ["# Canvas PRD 账号", "", ...users.map((user) => `- ${user.displayName} (${user.username}) · ${user.id}`)].join("\n");
     return asToolResult({ users }, response_format, markdown);
   },
@@ -813,7 +1347,7 @@ registerTool(
     description: "分页列出设计单，可按创建者、产品和状态过滤。不会修改任何数据。",
     inputSchema: {
       scope: z.enum(["all", "mine"]).default("all").describe("all=全部公开设计单；mine=owner_username 对应账号的设计单。"),
-      owner_username: z.string().optional().describe("创建者账号。scope=mine 时如果为空，会使用 PRD_CANVAS_MCP_OWNER_USERNAME、系统用户名或默认 MCP 账号。"),
+      owner_username: z.string().optional().describe("本地模式可指定创建者账号；中心服务模式固定使用 PRD_CANVAS_MCP_OWNER_USERNAME。"),
       product: Product.optional(),
       status: Status,
       limit: z.number().int().min(1).max(100).default(20),
@@ -823,6 +1357,18 @@ registerTool(
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   async ({ scope, owner_username, product, status, limit, offset, response_format }) => {
+    if (useRemoteApi) {
+      const { total, rows } = await remoteListDesigns({ scope, owner_username, product, status, limit, offset });
+      const output = {
+        total,
+        count: rows.length,
+        offset,
+        has_more: total > offset + rows.length,
+        next_offset: total > offset + rows.length ? offset + rows.length : null,
+        projects: rows,
+      };
+      return asToolResult(output, response_format, designSummaryMarkdown(rows, "设计单列表"));
+    }
     const owner = scope === "mine" ? resolveOwner(owner_username) : null;
     let rows = stmt.listDesigns.all();
     if (owner) rows = rows.filter((row) => row.owner_id === owner.id);
@@ -855,13 +1401,13 @@ registerTool(
       data_goals: z.string().max(10000).optional().describe("数据目标。"),
       experience_goals: z.string().max(10000).optional().describe("整体体验目标。"),
       analysis_url: z.string().max(1000).optional().describe("需求分析文档或聊天记录链接。"),
-      owner_username: z.string().optional().describe("让设计单归属到某个已存在账号；不填则自动推断。"),
+      owner_username: z.string().optional().describe("本地模式可指定归属账号；中心服务模式固定使用 PRD_CANVAS_MCP_OWNER_USERNAME，忽略此参数。"),
       response_format: ResponseFormat,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   async (input) => {
-    const owner = resolveOwner(input.owner_username);
+    const owner = useRemoteApi ? await remoteResolveOwner(input.owner_username) : resolveOwner(input.owner_username);
     const doc = blankDoc(owner, {
       title: input.title,
       product: input.product,
@@ -870,8 +1416,17 @@ registerTool(
       expGoals: input.experience_goals || "",
       analysisUrl: input.analysis_url || "",
     });
-    const { row } = createDesign(owner, doc);
-    const design = summarizeDesign(row, owner);
+    const { row } = useRemoteApi ? await remoteCreateDesign(owner.username, doc) : createDesign(owner, doc);
+    await remoteRecordActivity({
+      ownerUsername: owner.username,
+      designId: row.id,
+      phase: "project",
+      message: `已创建设计单「${row.title || input.title}」`,
+      detail: { title: row.title || input.title, product: row.product || input.product },
+      progress: 12,
+      status: "done",
+    });
+    const design = outputDesignSummary(row, owner);
     const markdown = `# 已创建设计单\n\n- 标题: ${design.title}\n- ID: ${design.id}\n- 产品: ${design.product}\n- 创建者: ${design.ownerName}\n- 打开: ${design.url}`;
     return asToolResult({ design, doc }, input.response_format, markdown);
   },
@@ -890,8 +1445,8 @@ registerTool(
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   async ({ project_id, include_markdown, response_format }) => {
-    const { row, doc } = loadDesign(project_id);
-    const design = summarizeDesign(row);
+    const { row, doc } = useRemoteApi ? await remoteLoadDesign(project_id) : loadDesign(project_id);
+    const design = outputDesignSummary(row);
     const markdown = include_markdown ? toMarkdown(doc) : `# ${design.title}\n\n- ID: ${design.id}\n- 产品: ${design.product}\n- 状态: ${design.status === "done" ? "已完成" : "编写中"}\n- 页面数: ${design.pageCount}`;
     return asToolResult({ design, doc, markdown: include_markdown ? markdown : undefined }, response_format, markdown);
   },
@@ -915,7 +1470,7 @@ registerTool(
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   async (input) => {
-    const { row, doc } = loadDesign(input.project_id);
+    const { owner, row, doc } = useRemoteApi ? await remoteLoadDesign(input.project_id) : { owner: null, ...loadDesign(input.project_id) };
     const previous = doc.meta?.mcpContext?.conversation || "";
     doc.meta = {
       ...(doc.meta || {}),
@@ -931,10 +1486,19 @@ registerTool(
         importedAt: nowISO(),
       },
     };
-    const saved = saveDesign(row, doc);
+    const saved = useRemoteApi ? await remoteSaveDesign(row.id, doc) : saveDesign(row, doc);
+    await remoteRecordActivity({
+      ownerUsername: owner?.username,
+      designId: row.id,
+      phase: "context",
+      message: "已写入需求背景、目标与关键决策",
+      detail: { decisions: (input.decisions || []).length, append: input.append },
+      progress: 22,
+      status: "done",
+    });
     const validation = validateDoc(saved.doc);
     const markdown = `# 已导入需求上下文\n\n- 设计单: ${saved.row.title}\n- 关键决策: ${(input.decisions || []).length} 条\n- 校验分数: ${validation.score}`;
-    return asToolResult({ design: summarizeDesign(saved.row), validation }, input.response_format, markdown);
+    return asToolResult({ design: outputDesignSummary(saved.row), validation }, input.response_format, markdown);
   },
 );
 
@@ -960,11 +1524,115 @@ registerTool(
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   async (input) => {
-    const { row, doc } = loadDesign(input.project_id);
+    const { owner, row, doc } = useRemoteApi ? await remoteLoadDesign(input.project_id) : { owner: null, ...loadDesign(input.project_id) };
     const node = upsertNode(doc, input);
-    const saved = saveDesign(row, doc);
+    const saved = useRemoteApi ? await remoteSaveDesign(row.id, doc) : saveDesign(row, doc);
+    await remoteRecordActivity({
+      ownerUsername: owner?.username,
+      designId: row.id,
+      phase: "node",
+      message: `已保存页面节点「${node.name || "未命名页面"}」`,
+      detail: { nodeId: node.id, hasPrototype: !!node.proto, prototypeKind: node.protoKind || "" },
+      progress: 45,
+      status: "done",
+    });
     const markdown = `# 页面节点已保存\n\n- 页面: ${node.name}\n- 节点 ID: ${node.id}\n- 原型: ${node.proto || "未添加"}`;
-    return asToolResult({ design: summarizeDesign(saved.row), node: nodeSummary(node) }, input.response_format, markdown);
+    return asToolResult({ design: outputDesignSummary(saved.row), node: nodeSummary(node) }, input.response_format, markdown);
+  },
+);
+
+registerTool(
+  "prd_canvas_delete_page_node",
+  {
+    title: "Delete Page Node",
+    description: [
+      "删除一个或多个页面节点，并自动清理相关跳转线、业务分组引用和文档排序引用。",
+      "适合模型生成后发现多余页面、重复页面、错误页面时使用。",
+      "注意：这是破坏性操作，被删除节点的页面说明和原型引用会从设计单中移除；已上传资源文件本身会保留为历史资源。",
+    ].join("\n"),
+    inputSchema: {
+      project_id: z.string().min(1),
+      node_ids: z.array(z.string()).default([]).describe("要删除的节点 ID 列表。"),
+      page_names: z.array(z.string()).default([]).describe("要删除的页面名称列表，会和 node_ids 合并。"),
+      response_format: ResponseFormat,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  },
+  async (input) => {
+    const { owner, row, doc } = useRemoteApi ? await remoteLoadDesign(input.project_id) : { owner: null, ...loadDesign(input.project_id) };
+    const ids = new Set(input.node_ids || []);
+    (input.page_names || []).forEach((name) => ids.add(resolveNode(doc, name, "删除页面").id));
+    const deletion = deleteNodesFromDoc(doc, [...ids]);
+    const saved = useRemoteApi ? await remoteSaveDesign(row.id, doc) : saveDesign(row, doc);
+    await remoteRecordActivity({
+      ownerUsername: owner?.username,
+      designId: row.id,
+      phase: "delete",
+      message: `已删除 ${deletion.removedNodes.length} 个页面节点`,
+      detail: { nodes: deletion.removedNodes.map((node) => ({ id: node.id, name: node.name })), removedEdges: deletion.removedEdges },
+      progress: 62,
+      status: "done",
+    });
+    const markdown = [
+      "# 页面节点已删除",
+      "",
+      `- 删除节点: ${deletion.removedNodes.map((node) => `${node.name || node.id}(${node.id})`).join("、")}`,
+      `- 同步删除跳转线: ${deletion.removedEdges}`,
+      `- 清理分组引用: ${deletion.removedGroupRefs}`,
+      `- 删除空分组: ${deletion.removedGroups}`,
+    ].join("\n");
+    return asToolResult({ design: outputDesignSummary(saved.row), deletion }, input.response_format, markdown);
+  },
+);
+
+registerTool(
+  "prd_canvas_arrange_canvas",
+  {
+    title: "Arrange Canvas Nodes",
+    description: [
+      "按页面跳转关系自动整理画布节点位置，避免生成后节点堆在一起。",
+      "默认会尊重业务分组：组内节点先整理，组和未分组节点再按整体流程排布。",
+      "建议在批量创建/删除页面、创建跳转线、创建分组之后调用一次；prd_canvas_generate_canvas_from_context 已经会自动调用。",
+    ].join("\n"),
+    inputSchema: {
+      project_id: z.string().min(1),
+      preserve_groups: z.boolean().default(true).describe("true=尊重业务分组进行组感知布局；false=忽略分组，只按节点和跳转线排布。"),
+      start_x: z.number().default(80).describe("整理后画布起始 X 坐标。"),
+      start_y: z.number().default(80).describe("整理后画布起始 Y 坐标。"),
+      gap_x: z.number().min(80).max(800).default(200).describe("同一流程层之间的横向间距。"),
+      gap_y: z.number().min(40).max(600).default(70).describe("同一列节点之间的纵向间距。"),
+      response_format: ResponseFormat,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async (input) => {
+    const { owner, row, doc } = useRemoteApi ? await remoteLoadDesign(input.project_id) : { owner: null, ...loadDesign(input.project_id) };
+    const arrangement = arrangeDocNodes(doc, {
+      preserveGroups: input.preserve_groups,
+      startX: input.start_x,
+      startY: input.start_y,
+      gapX: input.gap_x,
+      gapY: input.gap_y,
+    });
+    const saved = useRemoteApi ? await remoteSaveDesign(row.id, doc) : saveDesign(row, doc);
+    await remoteRecordActivity({
+      ownerUsername: owner?.username,
+      designId: row.id,
+      phase: "layout",
+      message: `已自动整理画布，移动 ${arrangement.moved.length} 个节点`,
+      detail: { total: arrangement.total, moved: arrangement.moved.length, preserveGroups: input.preserve_groups },
+      progress: 86,
+      status: "done",
+    });
+    const markdown = [
+      "# 画布已整理",
+      "",
+      `- 节点总数: ${arrangement.total}`,
+      `- 移动节点: ${arrangement.moved.length}`,
+      `- 清理无效跳转线: ${arrangement.cleanup.removedEdges}`,
+      `- 清理无效分组引用: ${arrangement.cleanup.removedGroupRefs}`,
+    ].join("\n");
+    return asToolResult({ design: outputDesignSummary(saved.row), arrangement }, input.response_format, markdown);
   },
 );
 
@@ -988,15 +1656,23 @@ registerTool(
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   async (input) => {
-    const { row, doc } = loadDesign(input.project_id);
-    const file = writeManagedFile({
-      ownerId: row.owner_id,
-      designId: row.id,
-      kind: "prototype",
-      originalName: input.file_name,
-      mimeType: "text/html",
-      buffer: Buffer.from(input.html, "utf8"),
-    });
+    const { owner, row, doc } = useRemoteApi ? await remoteLoadDesign(input.project_id) : { owner: null, ...loadDesign(input.project_id) };
+    const file = useRemoteApi
+      ? await remoteUploadFile({
+        designId: row.id,
+        kind: "prototype",
+        originalName: input.file_name,
+        mimeType: "text/html",
+        text: input.html,
+      })
+      : writeManagedFile({
+        ownerId: row.owner_id,
+        designId: row.id,
+        kind: "prototype",
+        originalName: input.file_name,
+        mimeType: "text/html",
+        buffer: Buffer.from(input.html, "utf8"),
+      });
     const node = upsertNode(doc, {
       node_id: input.node_id,
       name: input.page_name || input.file_name.replace(/\.html?$/i, "") || "HTML 原型页面",
@@ -1007,9 +1683,18 @@ registerTool(
       prototype_ratio: input.viewport_height / input.viewport_width,
       prototype_name: input.file_name,
     });
-    const saved = saveDesign(row, doc);
+    const saved = useRemoteApi ? await remoteSaveDesign(row.id, doc) : saveDesign(row, doc);
+    await remoteRecordActivity({
+      ownerUsername: owner?.username,
+      designId: row.id,
+      phase: "prototype",
+      message: `已为「${node.name || "未命名页面"}」导入 HTML 原型`,
+      detail: { nodeId: node.id, fileName: input.file_name, ratio: `${input.viewport_width}:${input.viewport_height}` },
+      progress: 52,
+      status: "done",
+    });
     const markdown = `# HTML 原型已导入\n\n- 页面: ${node.name}\n- 节点 ID: ${node.id}\n- 文件: ${file.absoluteUrl}\n- 展示比例: ${input.viewport_width}:${input.viewport_height}`;
-    return asToolResult({ design: summarizeDesign(saved.row), node: nodeSummary(node), file }, input.response_format, markdown);
+    return asToolResult({ design: outputDesignSummary(saved.row), node: nodeSummary(node), file }, input.response_format, markdown);
   },
 );
 
@@ -1029,7 +1714,7 @@ registerTool(
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   async (input) => {
-    const { row, doc } = loadDesign(input.project_id);
+    const { owner, row, doc } = useRemoteApi ? await remoteLoadDesign(input.project_id) : { owner: null, ...loadDesign(input.project_id) };
     const from = resolveNode(doc, input.from, "起点节点");
     const to = resolveNode(doc, input.to, "终点节点");
     if (from.id === to.id) throw new Error("起点和终点不能是同一个节点。");
@@ -1040,9 +1725,72 @@ registerTool(
       edge = { id: randomUUID().slice(0, 8), from: from.id, to: to.id, label: input.label || "跳转" };
       doc.edges.push(edge);
     }
-    const saved = saveDesign(row, doc);
+    const saved = useRemoteApi ? await remoteSaveDesign(row.id, doc) : saveDesign(row, doc);
+    await remoteRecordActivity({
+      ownerUsername: owner?.username,
+      designId: row.id,
+      phase: "edge",
+      message: `已创建页面跳转：${from.name} → ${to.name}`,
+      detail: { from: from.name, to: to.name, label: edge.label || "跳转" },
+      progress: 66,
+      status: "done",
+    });
     const markdown = `# 页面跳转已保存\n\n- ${from.name} --[${edge.label}]--> ${to.name}`;
-    return asToolResult({ design: summarizeDesign(saved.row), edge }, input.response_format, markdown);
+    return asToolResult({ design: outputDesignSummary(saved.row), edge }, input.response_format, markdown);
+  },
+);
+
+registerTool(
+  "prd_canvas_delete_transition",
+  {
+    title: "Delete Page Transition",
+    description: "删除一条或多条页面跳转线。可按 edge_id 删除，也可按起点/终点页面匹配删除，适合修正模型生成错的跳转关系。",
+    inputSchema: {
+      project_id: z.string().min(1),
+      edge_ids: z.array(z.string()).default([]).describe("要删除的跳转线 ID 列表。"),
+      transitions: z.array(z.object({
+        from: z.string().min(1).describe("起点节点 ID 或页面名。"),
+        to: z.string().min(1).describe("终点节点 ID 或页面名。"),
+        label: z.string().optional().describe("可选；提供后只删除同起点、同终点且 label 一致的跳转线。"),
+      })).default([]),
+      response_format: ResponseFormat,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  },
+  async (input) => {
+    const { owner, row, doc } = useRemoteApi ? await remoteLoadDesign(input.project_id) : { owner: null, ...loadDesign(input.project_id) };
+    const removeIds = new Set(input.edge_ids || []);
+    (input.transitions || []).forEach((transition) => {
+      const from = resolveNode(doc, transition.from, "跳转线起点");
+      const to = resolveNode(doc, transition.to, "跳转线终点");
+      (doc.edges || []).forEach((edge) => {
+        if (edge.from !== from.id || edge.to !== to.id) return;
+        if (transition.label !== undefined && String(edge.label || "") !== String(transition.label || "")) return;
+        removeIds.add(edge.id);
+      });
+    });
+    if (!removeIds.size) throw new Error("没有找到要删除的跳转线。");
+    const removedEdges = (doc.edges || []).filter((edge) => removeIds.has(edge.id));
+    if (!removedEdges.length) throw new Error("没有找到匹配的跳转线。");
+    doc.edges = (doc.edges || []).filter((edge) => !removeIds.has(edge.id));
+    const cleanup = sanitizeDocRelations(doc);
+    const saved = useRemoteApi ? await remoteSaveDesign(row.id, doc) : saveDesign(row, doc);
+    await remoteRecordActivity({
+      ownerUsername: owner?.username,
+      designId: row.id,
+      phase: "delete",
+      message: `已删除 ${removedEdges.length} 条页面跳转线`,
+      detail: { edges: removedEdges.map((edge) => ({ id: edge.id, from: edge.from, to: edge.to, label: edge.label || "" })) },
+      progress: 68,
+      status: "done",
+    });
+    const markdown = [
+      "# 页面跳转线已删除",
+      "",
+      `- 删除跳转线: ${removedEdges.length}`,
+      ...removedEdges.map((edge) => `  - ${edge.from} --[${edge.label || "跳转"}]--> ${edge.to} (${edge.id})`),
+    ].join("\n");
+    return asToolResult({ design: outputDesignSummary(saved.row), removedEdges, cleanup }, input.response_format, markdown);
   },
 );
 
@@ -1062,7 +1810,7 @@ registerTool(
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   async (input) => {
-    const { row, doc } = loadDesign(input.project_id);
+    const { owner, row, doc } = useRemoteApi ? await remoteLoadDesign(input.project_id) : { owner: null, ...loadDesign(input.project_id) };
     const ids = new Set(input.node_ids || []);
     (input.page_names || []).forEach((name) => ids.add(resolveNode(doc, name, "分组页面").id));
     const validIds = [...ids].filter((id) => (doc.nodes || []).some((node) => node.id === id));
@@ -1073,9 +1821,66 @@ registerTool(
     group.nodeIds = validIds;
     if (input.color_idx !== undefined) group.colorIdx = input.color_idx;
     if (!existing) doc.groups.push(group);
-    const saved = saveDesign(row, doc);
+    const saved = useRemoteApi ? await remoteSaveDesign(row.id, doc) : saveDesign(row, doc);
+    await remoteRecordActivity({
+      ownerUsername: owner?.username,
+      designId: row.id,
+      phase: "group",
+      message: `已保存业务分组「${group.name}」`,
+      detail: { groupId: group.id, nodeCount: group.nodeIds.length },
+      progress: 74,
+      status: "done",
+    });
     const markdown = `# 业务分组已保存\n\n- 分组: ${group.name}\n- 页面数: ${group.nodeIds.length}`;
-    return asToolResult({ design: summarizeDesign(saved.row), group }, input.response_format, markdown);
+    return asToolResult({ design: outputDesignSummary(saved.row), group }, input.response_format, markdown);
+  },
+);
+
+registerTool(
+  "prd_canvas_delete_group",
+  {
+    title: "Delete Business Group",
+    description: "删除业务分组但保留组内页面节点。适合修正模型生成错的分组或拆散不合理模块。",
+    inputSchema: {
+      project_id: z.string().min(1),
+      group_ids: z.array(z.string()).default([]).describe("要删除的分组 ID 列表。"),
+      group_names: z.array(z.string()).default([]).describe("要删除的分组名称列表。"),
+      response_format: ResponseFormat,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  },
+  async (input) => {
+    const { owner, row, doc } = useRemoteApi ? await remoteLoadDesign(input.project_id) : { owner: null, ...loadDesign(input.project_id) };
+    const removeIds = new Set(input.group_ids || []);
+    (input.group_names || []).forEach((name) => {
+      const raw = String(name || "").trim();
+      const group = (doc.groups || []).find((item) => item.name === raw)
+        || (doc.groups || []).find((item) => String(item.name || "").toLowerCase().includes(raw.toLowerCase()));
+      if (!group) throw new Error(`找不到业务分组「${raw}」。`);
+      removeIds.add(group.id);
+    });
+    if (!removeIds.size) throw new Error("请提供要删除的分组 ID 或名称。");
+    const removedGroups = (doc.groups || []).filter((group) => removeIds.has(group.id)).map((group) => ({ id: group.id, name: group.name, nodeCount: (group.nodeIds || []).length }));
+    if (!removedGroups.length) throw new Error("没有找到匹配的业务分组。");
+    doc.groups = (doc.groups || []).filter((group) => !removeIds.has(group.id));
+    const cleanup = sanitizeDocRelations(doc);
+    const saved = useRemoteApi ? await remoteSaveDesign(row.id, doc) : saveDesign(row, doc);
+    await remoteRecordActivity({
+      ownerUsername: owner?.username,
+      designId: row.id,
+      phase: "delete",
+      message: `已删除 ${removedGroups.length} 个业务分组`,
+      detail: { groups: removedGroups },
+      progress: 76,
+      status: "done",
+    });
+    const markdown = [
+      "# 业务分组已删除",
+      "",
+      `- 删除分组: ${removedGroups.map((group) => `${group.name || group.id}(${group.nodeCount}页)`).join("、")}`,
+      "- 组内页面节点已保留",
+    ].join("\n");
+    return asToolResult({ design: outputDesignSummary(saved.row), removedGroups, cleanup }, input.response_format, markdown);
   },
 );
 
@@ -1117,7 +1922,7 @@ registerTool(
         name: z.string(),
         pages: z.array(z.string()).default([]),
       })).max(40).default([]),
-      owner_username: z.string().optional(),
+      owner_username: z.string().optional().describe("本地模式可指定归属账号；中心服务模式固定使用 PRD_CANVAS_MCP_OWNER_USERNAME，忽略此参数。"),
       response_format: ResponseFormat,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -1125,8 +1930,16 @@ registerTool(
   async (input) => {
     const jobId = randomUUID();
     appendEvent(jobId, "start", "开始生成 Canvas 项目", { title: input.title, product: input.product });
-    const owner = resolveOwner(input.owner_username);
+    const owner = useRemoteApi ? await remoteResolveOwner(input.owner_username) : resolveOwner(input.owner_username);
     appendEvent(jobId, "owner", "已确定设计单创建者", { username: owner.username, displayName: owner.displayName });
+    await remoteRecordActivity({
+      ownerUsername: owner.username,
+      phase: "start",
+      message: `开始生成「${input.title}」`,
+      detail: { product: input.product, pageCount: (input.pages || []).length, prototypeCount: (input.html_prototypes || []).length },
+      progress: 5,
+      status: "running",
+    });
 
     const doc = blankDoc(owner, {
       title: input.title,
@@ -1139,21 +1952,47 @@ registerTool(
       conversation: input.conversation || "",
       mcpGenerated: true,
     });
-    const created = createDesign(owner, doc);
+    const created = useRemoteApi ? await remoteCreateDesign(owner.username, doc) : createDesign(owner, doc);
+    const saveGenerationStep = async () => {
+      const savedStep = useRemoteApi ? await remoteSaveDesign(created.row.id, created.doc, owner.username) : saveDesign(created.row, created.doc);
+      created.row = savedStep.row;
+      created.doc = savedStep.doc;
+      return savedStep;
+    };
     appendEvent(jobId, "project", "已创建设计单", { id: created.row.id });
+    await remoteRecordActivity({
+      ownerUsername: owner.username,
+      designId: created.row.id,
+      phase: "project",
+      message: `已创建设计单「${created.row.title || input.title}」`,
+      detail: { projectId: created.row.id },
+      progress: 12,
+      status: "running",
+    });
 
     const pageSpecs = normalizePageSpecs(input);
     const prototypeByName = new Map((input.html_prototypes || []).map((proto, index) => [proto.page_name || proto.name || `页面 ${index + 1}`, proto]));
-    pageSpecs.forEach((page, index) => {
+    for (const [index, page] of pageSpecs.entries()) {
       const proto = prototypeByName.get(page.prototype_name) || prototypeByName.get(page.name) || (input.html_prototypes || [])[index];
-      const uploaded = proto ? writeManagedFile({
-        ownerId: created.row.owner_id,
-        designId: created.row.id,
-        kind: "prototype",
-        originalName: proto.name || `${page.name}.html`,
-        mimeType: "text/html",
-        buffer: Buffer.from(proto.html, "utf8"),
-      }) : null;
+      const uploaded = proto
+        ? (useRemoteApi
+          ? await remoteUploadFile({
+            ownerUsername: owner.username,
+            designId: created.row.id,
+            kind: "prototype",
+            originalName: proto.name || `${page.name}.html`,
+            mimeType: "text/html",
+            text: proto.html,
+          })
+          : writeManagedFile({
+            ownerId: created.row.owner_id,
+            designId: created.row.id,
+            kind: "prototype",
+            originalName: proto.name || `${page.name}.html`,
+            mimeType: "text/html",
+            buffer: Buffer.from(proto.html, "utf8"),
+          }))
+        : null;
       const node = upsertNode(created.doc, {
         node_id: page.id,
         name: page.name,
@@ -1167,31 +2006,62 @@ registerTool(
         prototype_name: uploaded?.originalName || "",
       });
       appendEvent(jobId, "node", "已创建页面节点", { id: node.id, name: node.name, hasPrototype: !!uploaded });
-    });
+      await saveGenerationStep();
+      await remoteRecordActivity({
+        ownerUsername: owner.username,
+        designId: created.row.id,
+        phase: uploaded ? "prototype" : "node",
+        message: uploaded ? `已上传并填充「${node.name}」原型` : `已创建页面节点「${node.name}」`,
+        detail: { nodeId: node.id, pageIndex: index + 1, totalPages: pageSpecs.length, hasPrototype: !!uploaded },
+        progress: Math.min(62, 18 + Math.round(((index + 1) / Math.max(1, pageSpecs.length)) * 42)),
+        status: "running",
+      });
+    }
 
     const nodesByName = new Map(created.doc.nodes.map((node) => [node.name, node]));
     if ((input.transitions || []).length) {
-      input.transitions.forEach((transition) => {
+      for (const transition of input.transitions || []) {
         const from = created.doc.nodes.find((node) => node.id === transition.from) || nodesByName.get(transition.from);
         const to = created.doc.nodes.find((node) => node.id === transition.to) || nodesByName.get(transition.to);
-        if (!from || !to || from.id === to.id) return;
+        if (!from || !to || from.id === to.id) continue;
         created.doc.edges.push({ id: randomUUID().slice(0, 8), from: from.id, to: to.id, label: transition.label || "跳转" });
         appendEvent(jobId, "edge", "已创建页面跳转线", { from: from.name, to: to.name, label: transition.label || "跳转" });
-      });
+        await saveGenerationStep();
+        await remoteRecordActivity({
+          ownerUsername: owner.username,
+          designId: created.row.id,
+          phase: "edge",
+          message: `已创建跳转线：${from.name} → ${to.name}`,
+          detail: { from: from.name, to: to.name, label: transition.label || "跳转" },
+          progress: 68,
+          status: "running",
+        });
+      }
     } else {
       for (let i = 0; i < created.doc.nodes.length - 1; i += 1) {
         created.doc.edges.push({ id: randomUUID().slice(0, 8), from: created.doc.nodes[i].id, to: created.doc.nodes[i + 1].id, label: "下一步" });
       }
       if (created.doc.edges.length) appendEvent(jobId, "edge", "已按页面顺序生成默认跳转线", { count: created.doc.edges.length });
+      if (created.doc.edges.length) await saveGenerationStep();
+      if (created.doc.edges.length) await remoteRecordActivity({
+        ownerUsername: owner.username,
+        designId: created.row.id,
+        phase: "edge",
+        message: `已生成 ${created.doc.edges.length} 条默认页面跳转线`,
+        detail: { count: created.doc.edges.length },
+        progress: 68,
+        status: "running",
+      });
     }
 
     if ((input.groups || []).length) {
-      input.groups.forEach((group, index) => {
+      for (const [index, group] of (input.groups || []).entries()) {
         const ids = (group.pages || []).map((name) => created.doc.nodes.find((node) => node.id === name || node.name === name)?.id).filter(Boolean);
-        if (!ids.length) return;
+        if (!ids.length) continue;
         created.doc.groups.push({ id: randomUUID().slice(0, 8), name: group.name, nodeIds: ids, colorIdx: index % 10 });
         appendEvent(jobId, "group", "已创建业务分组", { name: group.name, count: ids.length });
-      });
+        await saveGenerationStep();
+      }
     } else {
       const byGroup = new Map();
       pageSpecs.forEach((page) => {
@@ -1206,15 +2076,47 @@ registerTool(
       if (!created.doc.groups.length && created.doc.nodes.length > 1) {
         created.doc.groups.push({ id: randomUUID().slice(0, 8), name: "核心流程", nodeIds: created.doc.nodes.map((node) => node.id), colorIdx: 0 });
       }
+      if (created.doc.groups.length) await saveGenerationStep();
     }
+    if (created.doc.groups.length) await remoteRecordActivity({
+      ownerUsername: owner.username,
+      designId: created.row.id,
+      phase: "group",
+      message: `已创建 ${created.doc.groups.length} 个业务分组`,
+      detail: { groups: created.doc.groups.map((group) => ({ id: group.id, name: group.name, nodeCount: (group.nodeIds || []).length })) },
+      progress: 76,
+      status: "running",
+    });
 
-    const saved = saveDesign(created.row, created.doc);
+    const arrangement = arrangeDocNodes(created.doc, { preserveGroups: true });
+    appendEvent(jobId, "layout", "已自动整理画布节点", { total: arrangement.total, moved: arrangement.moved.length });
+    await saveGenerationStep();
+    await remoteRecordActivity({
+      ownerUsername: owner.username,
+      designId: created.row.id,
+      phase: "layout",
+      message: `已自动整理画布，移动 ${arrangement.moved.length} 个节点`,
+      detail: { total: arrangement.total, moved: arrangement.moved.length },
+      progress: 86,
+      status: "running",
+    });
+
+    const saved = await saveGenerationStep();
     const validation = validateDoc(saved.doc);
     const markdown = toMarkdown(saved.doc);
     const job = finishJob(jobId, "done", { projectId: saved.row.id, validation });
-    const design = summarizeDesign(saved.row, owner);
-    const summary = `# Canvas 已生成\n\n- 设计单: ${design.title}\n- ID: ${design.id}\n- 页面数: ${design.pageCount}\n- 跳转线: ${saved.doc.edges.length}\n- 分组: ${saved.doc.groups.length}\n- 校验分数: ${validation.score}\n- 打开: ${design.url}\n\n${validationMarkdown(validation)}`;
-    return asToolResult({ job, design, doc: saved.doc, validation, markdown }, input.response_format, summary);
+    await remoteRecordActivity({
+      ownerUsername: owner.username,
+      designId: saved.row.id,
+      phase: "done",
+      message: `Canvas 已生成，校验分数 ${validation.score}`,
+      detail: { pageCount: saved.doc.nodes.length, edgeCount: saved.doc.edges.length, groupCount: saved.doc.groups.length, validationScore: validation.score },
+      progress: 100,
+      status: "done",
+    });
+    const design = outputDesignSummary(saved.row, owner);
+    const summary = `# Canvas 已生成\n\n- 设计单: ${design.title}\n- ID: ${design.id}\n- 页面数: ${design.pageCount}\n- 跳转线: ${saved.doc.edges.length}\n- 分组: ${saved.doc.groups.length}\n- 自动整理: 已移动 ${arrangement.moved.length} 个节点\n- 校验分数: ${validation.score}\n- 打开: ${design.url}\n\n${validationMarkdown(validation)}`;
+    return asToolResult({ job, design, doc: saved.doc, validation, markdown, arrangement }, input.response_format, summary);
   },
 );
 
@@ -1230,7 +2132,7 @@ registerTool(
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   async ({ project_id, response_format }) => {
-    const { doc } = loadDesign(project_id);
+    const { doc } = useRemoteApi ? await remoteLoadDesign(project_id) : loadDesign(project_id);
     const validation = validateDoc(doc);
     return asToolResult({ validation }, response_format, validationMarkdown(validation));
   },
@@ -1249,22 +2151,35 @@ registerTool(
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   async ({ project_id, save_export, response_format }) => {
-    const { row, doc } = loadDesign(project_id);
+    const { owner, row, doc } = useRemoteApi ? await remoteLoadDesign(project_id) : { owner: null, ...loadDesign(project_id) };
     const markdown = toMarkdown(doc);
     let exportInfo = null;
     if (save_export) {
-      const exportDir = join(storageRoot, "exports", row.id);
-      mkdirSync(exportDir, { recursive: true });
-      const filePath = join(exportDir, "requirement.md");
-      writeFileSync(filePath, markdown, "utf8");
-      exportInfo = {
-        url: `/api/export/${row.id}/requirement.md`,
-        absoluteUrl: `${baseUrl}/api/export/${row.id}/requirement.md`,
-        filePath,
-        size: statSync(filePath).size,
-      };
+      if (useRemoteApi) {
+        exportInfo = await remoteSaveMarkdownExport(row.id, markdown);
+      } else {
+        const exportDir = join(storageRoot, "exports", row.id);
+        mkdirSync(exportDir, { recursive: true });
+        const filePath = join(exportDir, "requirement.md");
+        writeFileSync(filePath, markdown, "utf8");
+        exportInfo = {
+          url: `/api/export/${row.id}/requirement.md`,
+          absoluteUrl: `${baseUrl}/api/export/${row.id}/requirement.md`,
+          filePath,
+          size: statSync(filePath).size,
+        };
+      }
     }
-    return asToolResult({ design: summarizeDesign(row), markdown, export: exportInfo }, response_format, markdown);
+    await remoteRecordActivity({
+      ownerUsername: owner?.username,
+      designId: row.id,
+      phase: "markdown",
+      message: save_export ? "已生成并保存 PRD Markdown" : "已生成 PRD Markdown",
+      detail: { saveExport: save_export, exportUrl: exportInfo?.absoluteUrl || exportInfo?.url || "" },
+      progress: 96,
+      status: "done",
+    });
+    return asToolResult({ design: outputDesignSummary(row), markdown, export: exportInfo }, response_format, markdown);
   },
 );
 
@@ -1297,7 +2212,7 @@ registerTool(
     description: "上传图片、HTML、Markdown 或 JSON 资源到 NAS，并登记到 files 表。用于给页面节点、竞品参考或导出包准备资源 URL。",
     inputSchema: {
       project_id: z.string().optional().describe("关联的设计单 ID。"),
-      owner_username: z.string().optional().describe("没有 project_id 时用于确定文件拥有者。"),
+      owner_username: z.string().optional().describe("本地模式下没有 project_id 时用于确定文件拥有者；中心服务模式固定使用 PRD_CANVAS_MCP_OWNER_USERNAME。"),
       kind: z.string().default("asset"),
       name: z.string().max(160).default("asset"),
       mime_type: z.string().default("application/octet-stream"),
@@ -1308,32 +2223,59 @@ registerTool(
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   async (input) => {
-    let ownerId;
-    if (input.project_id) {
-      const { row } = loadDesign(input.project_id);
-      ownerId = row.owner_id;
-    } else {
-      ownerId = resolveOwner(input.owner_username).id;
-    }
-    let buffer;
     let mimeType = input.mime_type;
     if (input.data_url) {
       const parsed = dataUrlToBuffer(input.data_url);
       if (!parsed) throw new Error("data_url 格式不正确。");
-      buffer = parsed.buffer;
       mimeType = input.mime_type || parsed.mimeType;
-    } else if (typeof input.text === "string") {
-      buffer = Buffer.from(input.text, "utf8");
-    } else {
+    } else if (typeof input.text !== "string") {
       throw new Error("请提供 text 或 data_url。");
     }
-    const file = writeManagedFile({
-      ownerId,
-      designId: input.project_id || null,
-      kind: input.kind,
-      originalName: input.name,
-      mimeType,
-      buffer,
+    let file;
+    if (useRemoteApi) {
+      if (input.project_id) await remoteLoadDesign(input.project_id, input.owner_username);
+      file = await remoteUploadFile({
+        ownerUsername: input.owner_username,
+        designId: input.project_id || null,
+        kind: input.kind,
+        originalName: input.name,
+        mimeType,
+        text: input.text,
+        dataUrl: input.data_url,
+      });
+    } else {
+      let ownerId;
+      if (input.project_id) {
+        const { row } = loadDesign(input.project_id);
+        ownerId = row.owner_id;
+      } else {
+        ownerId = resolveOwner(input.owner_username).id;
+      }
+      let buffer;
+      if (input.data_url) {
+        const parsed = dataUrlToBuffer(input.data_url);
+        if (!parsed) throw new Error("data_url 格式不正确。");
+        buffer = parsed.buffer;
+      } else {
+        buffer = Buffer.from(input.text, "utf8");
+      }
+      file = writeManagedFile({
+        ownerId,
+        designId: input.project_id || null,
+        kind: input.kind,
+        originalName: input.name,
+        mimeType,
+        buffer,
+      });
+    }
+    await remoteRecordActivity({
+      ownerUsername: input.owner_username,
+      designId: input.project_id || "",
+      phase: "asset",
+      message: `已上传资源「${file.originalName || input.name}」`,
+      detail: { kind: input.kind, mimeType, size: file.size || 0 },
+      progress: 35,
+      status: "done",
     });
     const markdown = `# 资源已上传\n\n- 文件: ${file.originalName}\n- URL: ${file.absoluteUrl}\n- 大小: ${file.size} bytes`;
     return asToolResult({ file }, input.response_format, markdown);
@@ -1359,6 +2301,7 @@ server.registerPrompt(
           `请把当前聊天内容整理为「${project_title}」的 Canvas PRD 项目，所属产品为 ${product}。`,
           "先抽取：需求背景、数据目标、体验目标、关键决策、页面列表、页面跳转、业务分组。",
           "如果聊天中包含 HTML 原型源码，请用 prd_canvas_generate_canvas_from_context 的 html_prototypes 传入；如果只有页面信息，先生成节点和跳转。",
+          "如果后续手动新增/删除节点、修改跳转线或分组，请调用 prd_canvas_arrange_canvas 整理画布，避免节点堆叠。",
           "生成后调用 prd_canvas_validate_project 检查缺失项，再调用 prd_canvas_generate_markdown 生成面向 vibe coding 的 PRD Markdown。",
         ].join("\n"),
       },
@@ -1367,14 +2310,21 @@ server.registerPrompt(
 );
 
 async function main() {
-  if (!existsSync(dbPath)) {
+  if (!useRemoteApi && !existsSync(dbPath)) {
     console.error(`Canvas PRD MCP: database will be created at ${dbPath}`);
   }
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`Canvas PRD MCP server running via stdio`);
-  console.error(`DB: ${dbPath}`);
-  console.error(`Storage: ${storageRoot}`);
+  if (useRemoteApi) {
+    console.error(`Mode: central API`);
+    console.error(`Base URL: ${baseUrl}`);
+    console.error(`Owner username: ${process.env.PRD_CANVAS_MCP_OWNER_USERNAME || "(not set)"}`);
+  } else {
+    console.error(`Mode: local SQLite`);
+    console.error(`DB: ${dbPath}`);
+    console.error(`Storage: ${storageRoot}`);
+  }
 }
 
 main().catch((error) => {

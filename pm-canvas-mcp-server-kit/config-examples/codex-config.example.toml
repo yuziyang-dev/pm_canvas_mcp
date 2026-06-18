@@ -4,5 +4,7 @@ args = ["__ABSOLUTE_PATH_TO_KIT__/mcp/canvas-mcp-server.mjs"]
 
 [mcp_servers.prd-canvas.env]
 PRD_CANVAS_BASE_URL = "http://127.0.0.1:5180"
+PRD_CANVAS_API_TOKEN = ""
+PRD_CANVAS_MCP_OWNER_USERNAME = ""
 DATABASE_PATH = "__ABSOLUTE_PATH_TO_KIT__/data/prd-canvas.sqlite"
 STORAGE_ROOT = "__ABSOLUTE_PATH_TO_KIT__/storage"

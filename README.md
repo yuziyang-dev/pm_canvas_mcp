@@ -41,6 +41,32 @@ Canvas PRD 是一款面向产品经理、设计师、交互设计师和研发团
 - 构建产物：`dist/`
 - 交付形态：源码 + README + 可选生产构建产物
 
+## 团队 MCP 接入
+
+如果要让同事在自己电脑的 Cursor、Codex、Claude 等 MCP 客户端里生成流程图和设计需求文档，并且内容直接出现在同一个 Canvas PRD 网页服务里，需要使用中心 API 模式。
+
+共享服务端启动时设置一枚 token：
+
+```bash
+PRD_CANVAS_API_TOKEN="your-shared-token" npm run dev:local
+```
+
+如果要在局域网里给同事访问，服务端可以继续使用默认 `HOST=0.0.0.0`，然后把终端里显示的 Network 地址发给同事，例如：
+
+```text
+http://10.88.x.x:5180/canvas.html
+```
+
+同事的 MCP 安装包配置需要包含：
+
+```text
+PRD_CANVAS_BASE_URL=http://10.88.x.x:5180
+PRD_CANVAS_API_TOKEN=your-shared-token
+PRD_CANVAS_MCP_OWNER_USERNAME=同事在网页里创建的账号
+```
+
+设置 `PRD_CANVAS_API_TOKEN` 后，MCP 不再写同事电脑里的本地 SQLite，也不会把图片/HTML 存在同事电脑上；所有项目、原型资源和 Markdown 导出都会通过 HTTP API 写入共享 Canvas PRD 服务。
+
 ## 核心功能
 
 ### 1. 需求信息

@@ -12,6 +12,16 @@
 - 校验需求背景、目标、页面说明、原型、跳转信息是否完整。
 - 读取生成过程事件，便于客户端展示生成进度。
 
+## 推荐模式：连接共享 Canvas PRD 服务
+
+如果希望同事在自己的电脑上使用 Cursor、Codex 或 Claude 创建的内容，能立刻出现在同一个 Canvas PRD 网页里，请使用中心服务模式：
+
+- `PRD_CANVAS_BASE_URL` 指向团队正在访问的 Canvas PRD 服务，例如 `http://你的电脑局域网 IP:5180`。
+- `PRD_CANVAS_API_TOKEN` 使用服务端配置的同一枚 token。
+- `PRD_CANVAS_MCP_OWNER_USERNAME` 填同事在 Canvas PRD 网页里创建的账号。
+
+中心服务模式下，MCP 不会写这个安装包里的 SQLite，也不会把图片/HTML 存在同事电脑上；它会通过 HTTP API 写入共享服务，由共享服务读写数据库和文件存储。
+
 ## 安装
 
 要求：
@@ -25,13 +35,22 @@
 node scripts/install.mjs
 ```
 
+如果要直接生成中心服务配置，可以这样运行：
+
+```bash
+PRD_CANVAS_BASE_URL="http://你的电脑局域网IP:5180" \
+PRD_CANVAS_API_TOKEN="服务端token" \
+PRD_CANVAS_MCP_OWNER_USERNAME="同事登录账号" \
+node scripts/install.mjs
+```
+
 安装脚本会：
 
 1. 检查 Node.js 和 `node:sqlite`。
 2. 安装 npm 依赖。
-3. 创建本地 `data/` 和 `storage/`。
+3. 创建本地离线兜底目录 `data/` 和 `storage/`。
 4. 生成 MCP 客户端配置片段到 `generated/`。
-5. 运行健康检查，确认 MCP server 能列出工具。
+5. 运行健康检查，确认 MCP server 能列出工具；如果设置了中心服务 token，会同时验证中心账号可访问。
 
 ## 客户端配置
 
@@ -83,35 +102,38 @@ npm run healthcheck
 
 ## 数据位置
 
-默认数据保存在当前文件夹内：
+未设置 `PRD_CANVAS_API_TOKEN` 时，MCP 使用本地离线模式，数据保存在当前文件夹内：
 
 - SQLite：`data/prd-canvas.sqlite`
 - 文件资源：`storage/`
 
 这些目录是运行态数据，不要提交到 Git，也不要当作安装包的一部分长期分发。
 
+设置 `PRD_CANVAS_API_TOKEN` 后，MCP 使用中心服务模式，以上本地目录只作为兜底存在，不参与核心数据读写。
+
 ## 连接已有 Canvas PRD 网页服务
 
-如果要让 MCP 生成的数据直接出现在某个已有 Canvas PRD 网页服务里，请修改 MCP 配置里的环境变量：
+如果要让 MCP 生成的数据直接出现在共享 Canvas PRD 网页服务里，请修改 MCP 配置里的环境变量：
 
-```json
-{
-  "PRD_CANVAS_BASE_URL": "http://127.0.0.1:5180",
-  "DATABASE_PATH": "/path/to/prd-canvas.sqlite",
-  "STORAGE_ROOT": "/path/to/prd-canvas-storage",
-  "PRD_CANVAS_MCP_OWNER_USERNAME": "your-login-username"
-}
+```text
+PRD_CANVAS_BASE_URL=http://你的电脑局域网IP:5180
+PRD_CANVAS_API_TOKEN=服务端token
+PRD_CANVAS_MCP_OWNER_USERNAME=同事登录账号
 ```
 
-`PRD_CANVAS_MCP_OWNER_USERNAME` 应该是网页里已经创建过的账号。这样 MCP 创建的设计单会归属到该账号，回到网页后有编辑权限。
+`PRD_CANVAS_MCP_OWNER_USERNAME` 必须是网页里已经创建过的账号。这样 MCP 创建的设计单会归属到该账号，回到网页后该账号有编辑权限，其他登录用户可浏览公开设计单。
 
 ## 常用工具
 
 - `prd_canvas_generate_canvas_from_context`
 - `prd_canvas_import_html_prototype`
 - `prd_canvas_upsert_page_node`
+- `prd_canvas_delete_page_node`
+- `prd_canvas_arrange_canvas`
 - `prd_canvas_create_transition`
+- `prd_canvas_delete_transition`
 - `prd_canvas_create_group`
+- `prd_canvas_delete_group`
 - `prd_canvas_generate_markdown`
 - `prd_canvas_validate_project`
 - `prd_canvas_get_generation_events`

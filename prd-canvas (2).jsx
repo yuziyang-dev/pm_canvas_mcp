@@ -209,6 +209,12 @@ function formatHtmlProtoRatio(value) {
   const ratio = htmlProtoRatio(value);
   return `${HTML_PROTO_VIEWPORT_W}:${Math.round(HTML_PROTO_VIEWPORT_W * ratio)}`;
 }
+function normalizeHtmlProtoStoredRatio(value) {
+  const ratio = htmlProtoRatio(value);
+  const invertedDefault = HTML_PROTO_VIEWPORT_W / HTML_PROTO_VIEWPORT_H;
+  if (ratio < 1 && Math.abs(ratio - invertedDefault) < 0.08) return HTML_PROTO_DEFAULT_RATIO;
+  return ratio;
+}
 function htmlFromDataUrl(src) {
   const value = String(src || "");
   if (!/^data:text\/html/i.test(value)) return "";
@@ -605,7 +611,7 @@ function normalizeDoc(d) {
     nodes: Array.isArray(doc.nodes) ? doc.nodes.map((n) => ({
       ...n,
       protoKind: n?.proto ? protoKindFromSrc(n.proto, n.protoKind) : "",
-      protoRatio: n?.proto ? (protoKindFromSrc(n.proto, n.protoKind) === "html" ? htmlProtoRatio(n.protoRatio) : n.protoRatio) : n?.protoRatio,
+      protoRatio: n?.proto ? (protoKindFromSrc(n.proto, n.protoKind) === "html" ? normalizeHtmlProtoStoredRatio(n.protoRatio) : n.protoRatio) : n?.protoRatio,
     })) : [],
     edges: Array.isArray(doc.edges) ? doc.edges : [],
     groups: Array.isArray(doc.groups) ? doc.groups : [],
@@ -919,6 +925,130 @@ function AppToast({ toast }) {
   );
 }
 
+const MCP_PHASE_LABELS = {
+  start: "启动",
+  owner: "账号",
+  project: "项目",
+  context: "需求",
+  node: "页面",
+  prototype: "原型",
+  edge: "连线",
+  group: "分组",
+  layout: "整理",
+  markdown: "文档",
+  asset: "资源",
+  delete: "删除",
+  done: "完成",
+  error: "异常",
+  work: "处理",
+};
+
+function mcpPhaseLabel(phase) {
+  return MCP_PHASE_LABELS[phase] || phase || "处理";
+}
+
+function mcpActivityAgeText(createdAt) {
+  const time = Date.parse(createdAt || "");
+  if (!time) return "";
+  const diff = Math.max(0, Date.now() - time);
+  if (diff < 10_000) return "刚刚";
+  if (diff < 60_000) return `${Math.floor(diff / 1000)} 秒前`;
+  if (diff < 60 * 60_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  return "";
+}
+
+function McpStatusBadge({ activity }) {
+  const connected = activity?.connected !== false;
+  const active = !!activity?.active;
+  const latest = activity?.latest;
+  const done = latest?.status === "done" && !active;
+  const label = active ? "MCP 正在工作" : (connected ? (done ? "MCP 最近完成" : "MCP 已联通") : "MCP 未联通");
+  const sub = active && latest ? mcpPhaseLabel(latest.phase) : (latest ? mcpActivityAgeText(latest.createdAt) : "等待智能体调用");
+  return (
+    <div style={{ margin: "0 0 10px", padding: "9px 10px", borderRadius: 14, border: `1px solid ${active ? "rgba(59,130,246,.24)" : C.line}`, background: active ? "rgba(239,246,255,.72)" : "rgba(248,250,252,.72)", display: "flex", alignItems: "center", gap: 8 }}>
+      <span style={{ width: 8, height: 8, borderRadius: 999, background: active ? C.indigo : (connected ? "#10B981" : "#94A3B8"), boxShadow: active ? "0 0 0 4px rgba(59,130,246,.14)" : "none", flexShrink: 0 }} />
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 11.5, fontWeight: 900, color: active ? C.indigo : C.soft, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</div>
+        <div style={{ marginTop: 2, fontSize: 10, fontWeight: 700, color: C.faint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sub || "等待智能体调用"}</div>
+      </div>
+    </div>
+  );
+}
+
+function McpActivityFloating({ activity, onOpenDesignId = null }) {
+  if (!activity?.active || !activity.latest || typeof document === "undefined") return null;
+  const latest = activity.latest;
+  const events = Array.isArray(activity.events) ? activity.events.slice(0, 4) : [];
+  const progress = latest.progress == null ? 0 : Math.max(0, Math.min(100, Number(latest.progress) || 0));
+  const canOpenDesign = !!latest.designId && typeof onOpenDesignId === "function";
+  return createPortal(
+    <div style={{ position: "fixed", right: 22, bottom: 22, width: 310, maxWidth: "calc(100vw - 32px)", zIndex: 10030, borderRadius: 18, border: `1px solid rgba(59,130,246,.22)`, background: "rgba(255,255,255,.94)", boxShadow: "0 22px 60px rgba(15,23,42,.18)", padding: 14, fontFamily: sans, color: C.ink, backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <span style={{ width: 8, height: 8, borderRadius: 999, background: latest.status === "error" ? "#EF4444" : C.indigo, boxShadow: "0 0 0 5px rgba(59,130,246,.14)", flexShrink: 0 }} />
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 900, color: C.ink }}>MCP 正在工作</div>
+            <div style={{ marginTop: 2, fontSize: 10.5, fontWeight: 800, color: C.faint }}>{mcpPhaseLabel(latest.phase)} · {mcpActivityAgeText(latest.createdAt)}</div>
+          </div>
+        </div>
+        <span style={{ fontSize: 12, fontWeight: 900, color: C.indigo }}>{progress ? `${progress}%` : ""}</span>
+      </div>
+      <div style={{ fontSize: 12.5, lineHeight: 1.45, fontWeight: 850, color: C.ink, marginBottom: 10, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{latest.message}</div>
+      <div style={{ height: 5, borderRadius: 999, background: "#E2E8F0", overflow: "hidden", marginBottom: events.length ? 10 : 0 }}>
+        <div style={{ width: `${Math.max(6, progress || 16)}%`, height: "100%", borderRadius: 999, background: latest.status === "error" ? "#EF4444" : C.indigo, transition: "width .28s ease" }} />
+      </div>
+      {canOpenDesign && (
+        <button type="button" onClick={() => onOpenDesignId(latest.designId)}
+          style={{ width: "100%", height: 34, border: "none", borderRadius: 999, background: C.indigo, color: "#fff", fontFamily: sans, fontSize: 12.5, fontWeight: 900, cursor: "pointer", margin: events.length ? "0 0 10px" : "10px 0 0", boxShadow: "0 10px 22px rgba(37,99,235,.2)" }}>
+          打开生成中画布
+        </button>
+      )}
+      {events.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {events.map((event) => (
+            <div key={event.id} style={{ display: "grid", gridTemplateColumns: "44px minmax(0,1fr)", gap: 8, alignItems: "baseline", fontSize: 10.5, lineHeight: 1.35 }}>
+              <span style={{ color: event.id === latest.id ? C.indigo : C.faint, fontWeight: 900 }}>{mcpPhaseLabel(event.phase)}</span>
+              <span style={{ color: event.id === latest.id ? C.ink : C.soft, fontWeight: event.id === latest.id ? 850 : 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{event.message}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>,
+    document.body
+  );
+}
+
+function isEditableDomFocused() {
+  if (typeof document === "undefined") return false;
+  const el = document.activeElement;
+  if (!el) return false;
+  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable || !!el.closest?.('[contenteditable="true"], [data-rte="1"]');
+}
+
+function diffMcpDocHighlights(prevDoc, nextDoc) {
+  const prevNodes = new Map((prevDoc?.nodes || []).map((node) => [node.id, node]));
+  const prevEdges = new Map((prevDoc?.edges || []).map((edge) => [edge.id, edge]));
+  const prevGroups = new Map((prevDoc?.groups || []).map((group) => [group.id, group]));
+  const nodeIds = [];
+  const edgeIds = [];
+  const groupIds = [];
+  (nextDoc?.nodes || []).forEach((node) => {
+    const prev = prevNodes.get(node.id);
+    if (!prev || prev.proto !== node.proto || prev.name !== node.name || Math.abs(Number(prev.x || 0) - Number(node.x || 0)) > 2 || Math.abs(Number(prev.y || 0) - Number(node.y || 0)) > 2) nodeIds.push(node.id);
+  });
+  (nextDoc?.edges || []).forEach((edge) => {
+    const prev = prevEdges.get(edge.id);
+    if (!prev || prev.from !== edge.from || prev.to !== edge.to || prev.label !== edge.label) edgeIds.push(edge.id);
+  });
+  (nextDoc?.groups || []).forEach((group) => {
+    const prev = prevGroups.get(group.id);
+    const prevMembers = (prev?.nodeIds || []).join(",");
+    const members = (group.nodeIds || []).join(",");
+    if (!prev || prev.name !== group.name || prevMembers !== members) groupIds.push(group.id);
+  });
+  return { nodeIds, edgeIds, groupIds, nonce: Date.now() };
+}
+
 function EditSubmittedConfirmModal({ onCancel, onConfirm }) {
   if (typeof document === "undefined") return null;
   return createPortal(
@@ -938,7 +1068,7 @@ function EditSubmittedConfirmModal({ onCancel, onConfirm }) {
   );
 }
 
-function ManagerSidebar({ active = "设计单", currentUser = null, onLogout = null }) {
+function ManagerSidebar({ active = "设计单", currentUser = null, onLogout = null, mcpActivity = null }) {
   const displayName = currentUser?.displayName || "Yuziyang";
   const initials = displayName.slice(0, 2).toUpperCase();
   return (
@@ -956,6 +1086,7 @@ function ManagerSidebar({ active = "设计单", currentUser = null, onLogout = n
         <ManagerNav active={active === "团队知识库"} icon="knowledge" label="团队知识库" />
       </div>
       <div style={{ padding: "12px 8px 4px", borderTop: `1px solid ${C.lineSoft}` }}>
+        {mcpActivity && <McpStatusBadge activity={mcpActivity} />}
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ width: 28, height: 28, borderRadius: 999, background: "#E2E8F0", color: C.soft, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 900, flexShrink: 0 }}>{initials}</span>
           <div style={{ minWidth: 0 }}>
@@ -1197,7 +1328,7 @@ function HighlightedSearchText({ text, query }) {
   );
 }
 
-function RequirementManager({ doc, onOpenCanvas, onCreate, onDelete, serverCards = null, serverMode = false, scope = "mine", onScopeChange, currentUser = null, onLogout = null, loading = false }) {
+function RequirementManager({ doc, onOpenCanvas, onCreate, onDelete, serverCards = null, serverMode = false, scope = "mine", onScopeChange, currentUser = null, onLogout = null, loading = false, mcpActivity = null }) {
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query, 180);
@@ -1263,7 +1394,7 @@ function RequirementManager({ doc, onOpenCanvas, onCreate, onDelete, serverCards
         @media(max-width:1080px){.manager-sidebar{display:none!important}.manager-main{padding:20px!important}.manager-header{gap:14px;align-items:flex-start!important;flex-direction:column!important}.manager-actions{width:100%;justify-content:space-between}.manager-search{width:100%!important}}
         @media(max-width:720px){.manager-content{min-height:0!important}.manager-list-scroll{overflow-x:auto!important}.manager-list-table{min-width:760px!important}.manager-panel-head{align-items:flex-start!important;flex-direction:column!important}.manager-date-filter{align-self:flex-start}}
       `}</style>
-      <ManagerSidebar active="设计单" currentUser={currentUser} onLogout={onLogout} />
+      <ManagerSidebar active="设计单" currentUser={currentUser} onLogout={onLogout} mcpActivity={mcpActivity} />
 
       <main className="manager-main" style={{ height: "100vh", minHeight: "100vh", overflow: "hidden", padding: "30px 28px 28px 224px", display: "flex", flexDirection: "column" }}>
         <header className="manager-header" style={{ flexShrink: 0, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 18, marginBottom: 22 }}>
@@ -1398,7 +1529,7 @@ function RequirementListRow({ card, query = "", onOpenCanvas, onContextMenu }) {
   );
 }
 
-function RequirementDetail({ card, onBack, onOpenCanvas, onCreate, currentUser = null, onLogout = null }) {
+function RequirementDetail({ card, onBack, onOpenCanvas, onCreate, currentUser = null, onLogout = null, mcpActivity = null }) {
   const [stage, setStage] = useState(lifecycleStageForCard(card));
   useEffect(() => { setStage(lifecycleStageForCard(card)); }, [card?.id]);
   const product = getProductMeta(card?.product);
@@ -1466,7 +1597,7 @@ function RequirementDetail({ card, onBack, onOpenCanvas, onCreate, currentUser =
         @media(max-width:1080px){.manager-sidebar{display:none!important}.manager-main{padding:20px!important}.requirement-header{gap:14px;align-items:flex-start!important;flex-direction:column!important}.requirement-grid{grid-template-columns:1fr!important}.requirement-context{display:none!important}}
         @media(max-width:760px){.requirement-stage-rail{grid-template-columns:1fr 1fr!important}.requirement-hero{align-items:flex-start!important;flex-direction:column!important}.requirement-top-actions{width:100%;justify-content:space-between!important}}
       `}</style>
-      <ManagerSidebar active="设计单" currentUser={currentUser} onLogout={onLogout} />
+      <ManagerSidebar active="设计单" currentUser={currentUser} onLogout={onLogout} mcpActivity={mcpActivity} />
       <main className="manager-main" style={{ height: "100vh", minHeight: "100vh", overflow: "hidden", padding: "30px 28px 28px 224px", display: "flex", flexDirection: "column" }}>
         <header className="requirement-header" style={{ flexShrink: 0, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 18, marginBottom: 18 }}>
           <div style={{ minWidth: 0 }}>
@@ -1603,6 +1734,8 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
   const [comments, setComments] = useState([]);
   const [managerScope, setManagerScope] = useState("mine");
   const [managerLoading, setManagerLoading] = useState(false);
+  const [mcpActivity, setMcpActivity] = useState(null);
+  const [mcpHighlights, setMcpHighlights] = useState({ nodeIds: [], edgeIds: [], groupIds: [], nonce: 0 });
   const [mode, setMode] = useState("canvas"); // canvas | doc | export
   const [setup, setSetup] = useState(false);
   const [sel, setSel] = useState(null); // 选中节点 id
@@ -1623,16 +1756,16 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
     setToast({ id: Date.now(), message });
   }, []);
 
-  const refreshServerDesigns = useCallback(async (scope = "mine") => {
+  const refreshServerDesigns = useCallback(async (scope = "mine", options = {}) => {
     if (!apiClient) return;
-    setManagerLoading(true);
+    if (!options.silent) setManagerLoading(true);
     try {
       const result = await apiClient.listDesigns(scope);
       setServerDesigns(result.designs || []);
     } catch (error) {
       showToast?.(error.message || "设计单列表加载失败");
     } finally {
-      setManagerLoading(false);
+      if (!options.silent) setManagerLoading(false);
     }
   }, [apiClient, showToast]);
 
@@ -1675,6 +1808,63 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
     const timer = window.setTimeout(() => setToast(null), 2600);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    if (!apiMode || !apiClient?.getMcpActivity) {
+      setMcpActivity(null);
+      return undefined;
+    }
+    let alive = true;
+    const pull = async () => {
+      try {
+        const result = await apiClient.getMcpActivity(24);
+        if (alive) setMcpActivity(result || { connected: true, active: false, events: [] });
+      } catch {
+        if (alive) setMcpActivity({ connected: false, active: false, latest: null, events: [] });
+      }
+    };
+    pull();
+    const timer = window.setInterval(pull, 1800);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [apiMode, apiClient]);
+
+  useEffect(() => {
+    const latest = mcpActivity?.latest;
+    if (!apiMode || !apiClient || !latest?.designId) return undefined;
+    let cancelled = false;
+    const sync = async () => {
+      if (workspace === "manager" || workspace === "requirement") {
+        void refreshServerDesigns(managerScope, { silent: true });
+      }
+      const activeId = activeDesignRef.current?.id || apiClient.getCurrentDesignId?.();
+      if (workspace !== "workbench" || activeId !== latest.designId) return;
+      if (isEditableDomFocused()) return;
+      try {
+        const result = await apiClient.getDesign(latest.designId);
+        if (cancelled) return;
+        const nextDoc = normalizeDoc(result.doc);
+        const highlight = diffMcpDocHighlights(docRef.current, nextDoc);
+        setDoc(nextDoc);
+        setActiveDesign(result.design);
+        if (highlight.nodeIds.length || highlight.edgeIds.length || highlight.groupIds.length) setMcpHighlights(highlight);
+      } catch {
+        // MCP 自动刷新失败时保持当前视图，不打扰正在观察或编辑的人。
+      }
+    };
+    sync();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiMode, apiClient, mcpActivity?.latest?.id, mcpActivity?.latest?.designId, workspace, managerScope, refreshServerDesigns]);
+
+  useEffect(() => {
+    if (!mcpHighlights.nonce) return undefined;
+    const timer = window.setTimeout(() => setMcpHighlights({ nodeIds: [], edgeIds: [], groupIds: [], nonce: 0 }), 3600);
+    return () => window.clearTimeout(timer);
+  }, [mcpHighlights.nonce]);
 
   // 普通更新:记录历史(用于撤销)
   const update = useCallback((next) => {
@@ -1811,9 +2001,9 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
     setWorkspace("manager");
   }, [apiMode, refreshServerDesigns, managerScope]);
 
-  const openRequirementCanvas = useCallback(async (card) => {
-    if (apiMode && card?.kind === "server") {
-      try {
+	  const openRequirementCanvas = useCallback(async (card) => {
+	    if (apiMode && card?.kind === "server") {
+	      try {
         const result = await apiClient.getDesign(card.id);
         apiClient.setCurrentDesignId(card.id);
         histRef.current = [];
@@ -1836,8 +2026,37 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
       openWorkbench("canvas");
       return;
     }
-    createRequirementFromSeed(card);
-	  }, [apiMode, apiClient, createRequirementFromSeed, loadDesignComments, openWorkbench, showToast]);
+	    createRequirementFromSeed(card);
+		  }, [apiMode, apiClient, createRequirementFromSeed, loadDesignComments, openWorkbench, showToast]);
+
+  const openMcpDesign = useCallback(async (designId) => {
+    if (!apiMode || !apiClient || !designId) return;
+    try {
+      const result = await apiClient.getDesign(designId);
+      apiClient.setCurrentDesignId(designId);
+      const nextDoc = normalizeDoc(result.doc);
+      histRef.current = [];
+      setDoc(nextDoc);
+      setActiveDesign(result.design);
+      void loadDesignComments(result.design.id);
+      setActiveRequirement(null);
+      setDocFocusTarget(null);
+      setSel(null);
+      setDetail(null);
+      setMode("canvas");
+      setWorkspace("workbench");
+      setSetup(false);
+      const highlight = {
+        nodeIds: (nextDoc.nodes || []).map((node) => node.id),
+        edgeIds: (nextDoc.edges || []).map((edge) => edge.id),
+        groupIds: (nextDoc.groups || []).map((group) => group.id),
+        nonce: Date.now(),
+      };
+      if (highlight.nodeIds.length || highlight.edgeIds.length || highlight.groupIds.length) setMcpHighlights(highlight);
+    } catch (error) {
+      showToast(error.message || "MCP 生成中的设计单加载失败");
+    }
+  }, [apiMode, apiClient, loadDesignComments, showToast]);
 
   const deleteRequirement = useCallback(async (card) => {
     if (!apiMode || !apiClient || !card?.id) return;
@@ -1929,7 +2148,9 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
           currentUser={currentUser}
           onLogout={onLogout}
           loading={managerLoading}
+          mcpActivity={mcpActivity}
         />
+        <McpActivityFloating activity={mcpActivity} onOpenDesignId={openMcpDesign} />
         <AppToast toast={toast} />
       </>
     );
@@ -1939,7 +2160,8 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
     const detailCard = activeRequirement?.kind === "current" ? currentRequirementCard(doc) : activeRequirement || currentRequirementCard(doc);
     return (
       <>
-        <RequirementDetail card={detailCard} onBack={returnToManager} onOpenCanvas={openRequirementCanvas} onCreate={createBlankRequirement} currentUser={currentUser} onLogout={onLogout} />
+        <RequirementDetail card={detailCard} onBack={returnToManager} onOpenCanvas={openRequirementCanvas} onCreate={createBlankRequirement} currentUser={currentUser} onLogout={onLogout} mcpActivity={mcpActivity} />
+        <McpActivityFloating activity={mcpActivity} onOpenDesignId={openMcpDesign} />
         <AppToast toast={toast} />
       </>
     );
@@ -1969,7 +2191,9 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
         @media(max-width:860px){.doc-toolbar-panel{display:none}.doc-editor-workbench{padding:16px!important}.doc-article{padding:36px 22px!important}}
         .rte strong,.rte b{font-weight:700}
         @keyframes flowDash{to{stroke-dashoffset:-12}}
-        @keyframes nodeDetailSlideIn{from{transform:translateX(100%)}to{transform:translateX(0)}}`}</style>
+        @keyframes nodeDetailSlideIn{from{transform:translateX(100%)}to{transform:translateX(0)}}
+        @keyframes mcpNodePulse{0%{box-shadow:0 0 0 0 rgba(59,130,246,.4),0 8px 32px -4px rgba(59,130,246,.18);transform:translateY(-2px)}70%{box-shadow:0 0 0 12px rgba(59,130,246,0),0 16px 42px rgba(37,99,235,.2);transform:translateY(-2px)}100%{box-shadow:0 0 0 0 rgba(59,130,246,0),0 8px 32px -4px rgba(59,130,246,.12);transform:none}}
+        @keyframes mcpGroupPulse{0%{filter:saturate(1.3);box-shadow:0 0 0 0 rgba(59,130,246,.24),0 14px 34px rgba(37,99,235,.12)}70%{box-shadow:0 0 0 14px rgba(59,130,246,0),0 18px 44px rgba(37,99,235,.16)}100%{box-shadow:0 12px 34px rgba(37,99,235,.08)}}`}</style>
 
       <header style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)", alignItems: "center", gap: 16, padding: "14px 18px 10px", background: C.canvas, zIndex: 30, flexShrink: 0 }}>
         <div style={{ justifySelf: "start", width: "fit-content", maxWidth: "100%", height: 40, display: "flex", alignItems: "center", gap: 8, minWidth: 0, background: C.glass, border: `1px solid ${C.line}`, borderRadius: 999, padding: "0 17px 0 10px", boxShadow: C.shadow, backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}>
@@ -2002,7 +2226,7 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
       </header>
 
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-        {mode === "canvas" && <Canvas doc={doc} update={update} updateSilent={setDocSilent} pushHistory={() => { const p = docRef.current; if (p) { histRef.current.push(p); if (histRef.current.length > 60) histRef.current.shift(); } }} sel={sel} setSel={setSel} openDetail={setDetail} openDocNode={openDocNode} getClip={() => clipRef.current} setClip={(v) => { clipRef.current = v; }} readOnly={readOnly} />}
+        {mode === "canvas" && <Canvas doc={doc} update={update} updateSilent={setDocSilent} pushHistory={() => { const p = docRef.current; if (p) { histRef.current.push(p); if (histRef.current.length > 60) histRef.current.shift(); } }} sel={sel} setSel={setSel} openDetail={setDetail} openDocNode={openDocNode} getClip={() => clipRef.current} setClip={(v) => { clipRef.current = v; }} readOnly={readOnly} mcpHighlights={mcpHighlights} />}
         {mode === "doc" && <DocView doc={doc} update={update} onOpenCanvas={() => setMode("canvas")} focusNodeTarget={docFocusTarget} onFocusNodeHandled={() => setDocFocusTarget(null)} readOnly={readOnly} comments={comments} onAddComment={addDocComment} currentUser={currentUser} />}
         {mode === "export" && <ExportViewPane doc={doc} apiClient={apiClient} activeDesign={activeDesign} onToast={showToast} />}
       </div>
@@ -2010,6 +2234,7 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
       {!readOnly && setup && <SetupModal doc={doc} onSave={(meta) => { update({ ...doc, meta: { ...doc.meta, ...meta, setupDone: true } }); setSetup(false); }} onSkip={() => { update({ ...doc, meta: { ...doc.meta, setupDone: true } }); setSetup(false); }} />}
       {!readOnly && detail && <NodeDetail node={doc.nodes.find((n) => n.id === detail)} onClose={() => setDetail(null)} onSave={(patch) => update({ ...doc, nodes: doc.nodes.map((n) => (n.id === detail ? { ...n, ...patch } : n)) })} />}
       {editConfirmOpen && <EditSubmittedConfirmModal onCancel={() => setEditConfirmOpen(false)} onConfirm={startSubmittedEdit} />}
+      <McpActivityFloating activity={mcpActivity} onOpenDesignId={openMcpDesign} />
       <AppToast toast={toast} />
     </div>
   );
@@ -2020,7 +2245,7 @@ export function DesignCanvasOnly() {
 }
 
 /* ============ 画布 ============ */
-function Canvas({ doc, update, updateSilent, pushHistory, sel, setSel, openDetail, openDocNode, getClip, setClip, readOnly = false }) {
+function Canvas({ doc, update, updateSilent, pushHistory, sel, setSel, openDetail, openDocNode, getClip, setClip, readOnly = false, mcpHighlights = null }) {
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   const [pan, setPan] = useState(null);
   const [drag, setDrag] = useState(null); // {ids:[], off:{id:{dx,dy}}, moved, canDropToGroup}
@@ -2345,6 +2570,9 @@ function Canvas({ doc, update, updateSilent, pushHistory, sel, setSel, openDetai
   const nodeH = (n) => imgH(n) + nodeTitleH(n) + nodeDescH(n);
   const anchorY = (n) => n.y + mediaTop(n) + imgH(n) / 2; // 锚点对齐原型图区域中线
   const edgeRoutes = buildEdgeRoutes(doc.edges, doc.nodes, imgH);
+  const mcpNodeIds = new Set(mcpHighlights?.nodeIds || []);
+  const mcpEdgeIds = new Set(mcpHighlights?.edgeIds || []);
+  const mcpGroupIds = new Set(mcpHighlights?.groupIds || []);
   function syncProtoRatio(n, img) {
     if (readOnly) return;
     const ratio = img.naturalWidth ? img.naturalHeight / img.naturalWidth : null;
@@ -2705,10 +2933,11 @@ function Canvas({ doc, update, updateSilent, pushHistory, sel, setSel, openDetai
           const b = groupBox(g); if (!b) return null;
           const col = groupColor(g.colorIdx);
           const activeDrop = dropGroupId === g.id;
+          const mcpHot = mcpGroupIds.has(g.id);
           return (
             <div key={g.id} data-group-id={g.id} data-node-ids={g.nodeIds.join(",")} onMouseDown={(e) => groupDown(e, g)}
               onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
-              style={{ position: "absolute", left: b.x, top: b.y, width: b.w, height: b.h, background: activeDrop ? col.activeBg : col.bg, border: `${activeDrop ? 2.5 : 2}px dashed ${activeDrop ? col.text : col.border}`, borderRadius: 24, pointerEvents: "auto", cursor: pan ? "grabbing" : "grab", boxShadow: activeDrop ? `0 0 0 5px ${col.ring}, 0 14px 34px ${col.shadow}` : `0 12px 34px ${col.shadow}, inset 0 1px 0 rgba(255,255,255,.42)`, backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", transition: "background .12s, border-color .12s, box-shadow .12s" }}>
+              style={{ position: "absolute", left: b.x, top: b.y, width: b.w, height: b.h, background: activeDrop ? col.activeBg : col.bg, border: `${activeDrop || mcpHot ? 2.5 : 2}px dashed ${activeDrop || mcpHot ? col.text : col.border}`, borderRadius: 24, pointerEvents: "auto", cursor: pan ? "grabbing" : "grab", boxShadow: activeDrop ? `0 0 0 5px ${col.ring}, 0 14px 34px ${col.shadow}` : `0 12px 34px ${col.shadow}, inset 0 1px 0 rgba(255,255,255,.42)`, backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", transition: "background .12s, border-color .12s, box-shadow .12s", animation: mcpHot ? "mcpGroupPulse 1.2s ease-out 2" : "none" }}>
               <div onMouseDown={(e) => e.stopPropagation()}
                 style={{ position: "absolute", top: -13, left: 22, width: 184, height: 26, display: "flex", alignItems: "center", gap: 6, border: `1px solid ${col.border}`, background: "rgba(255,255,255,.86)", color: col.text, borderRadius: 999, padding: "3px 9px", boxSizing: "border-box", boxShadow: "0 1px 3px rgba(15,23,42,.06)", pointerEvents: "all", zIndex: groupColorMenu === g.id ? 20 : 3 }}>
                 {!readOnly && (
@@ -2741,10 +2970,11 @@ function Canvas({ doc, update, updateSilent, pushHistory, sel, setSel, openDetai
             const lx = g.lx, ly = g.ly;
             const isSel = selEdge === e.id, isHover = hoverEdge === e.id;
             const fromSelectedNode = selIds.includes(e.from);
-            const hot = isSel || isHover || fromSelectedNode;
+            const mcpHot = mcpEdgeIds.has(e.id);
+            const hot = isSel || isHover || fromSelectedNode || mcpHot;
             return (
               <g key={e.id} data-edge-id={e.id} data-edge-from={e.from} data-edge-to={e.to} data-edge-hot={hot ? "1" : "0"}>
-                <path data-edge-line="1" d={g.path} fill="none" stroke={hot ? C.indigo : "#94A3B8"} strokeWidth={hot ? 2.8 : 2} opacity={hot ? 1 : (g.back ? 0.55 : 0.75)} strokeDasharray="8 4" style={{ animation: hot ? "flowDash .8s linear infinite" : "none" }} />
+                <path data-edge-line="1" d={g.path} fill="none" stroke={hot ? C.indigo : "#94A3B8"} strokeWidth={mcpHot ? 3.2 : (hot ? 2.8 : 2)} opacity={hot ? 1 : (g.back ? 0.55 : 0.75)} strokeDasharray="8 4" style={{ animation: hot ? "flowDash .8s linear infinite" : "none", filter: mcpHot ? "drop-shadow(0 0 6px rgba(59,130,246,.42))" : "none" }} />
                 {/* 透明加宽热区:悬停高亮 + 点击选中 */}
                 <path d={g.path} fill="none" stroke="transparent" strokeWidth="16"
                   style={{ pointerEvents: "stroke", cursor: "pointer" }}
@@ -2796,12 +3026,13 @@ function Canvas({ doc, update, updateSilent, pushHistory, sel, setSel, openDetai
           const mediaH = imgH(n);
           const mediaClipId = `node-proto-clip-${n.id}`;
           const protoHtml = isHtmlProto(n);
+          const mcpHot = mcpNodeIds.has(n.id);
           return (
             <div key={n.id} data-node-id={n.id} data-image-drop-target={imageDropTarget ? "1" : "0"} draggable={false} onDragStart={(e) => e.preventDefault()} onMouseDown={(e) => nodeDown(e, n)} onContextMenu={(e) => onNodeContext(e, n)} onDoubleClick={(e) => { e.stopPropagation(); if (!readOnly) openDetail(n.id); }}
               style={{ position: "absolute", left: n.x, top: n.y, width: NODE_W, height: nodeH(n), background: C.surface, borderRadius: 14,
-                border: `1px solid ${imageDropTarget || linkTo || active ? C.indigo : C.line}`,
-                boxShadow: imageDropTarget ? `0 0 0 4px rgba(59,130,246,.28), 0 18px 38px rgba(37,99,235,.2)` : (linkTo ? `0 0 0 3px ${C.copperSoft}, 0 12px 34px rgba(37,99,235,.2)` : (active ? `0 0 0 3px ${C.indigo}, 0 8px 32px -4px rgba(59,130,246,.18)` : C.shadow)),
-                cursor: pan ? "grabbing" : "grab", userSelect: "none", transition: "box-shadow .12s, border-color .12s, transform .12s", transform: imageDropTarget ? "translateY(-2px)" : "none" }}>
+                border: `1px solid ${imageDropTarget || linkTo || active || mcpHot ? C.indigo : C.line}`,
+                boxShadow: mcpHot ? `0 0 0 4px rgba(59,130,246,.22), 0 18px 38px rgba(37,99,235,.18)` : (imageDropTarget ? `0 0 0 4px rgba(59,130,246,.28), 0 18px 38px rgba(37,99,235,.2)` : (linkTo ? `0 0 0 3px ${C.copperSoft}, 0 12px 34px rgba(37,99,235,.2)` : (active ? `0 0 0 3px ${C.indigo}, 0 8px 32px -4px rgba(59,130,246,.18)` : C.shadow))),
+                cursor: pan ? "grabbing" : "grab", userSelect: "none", transition: "left .34s ease, top .34s ease, box-shadow .12s, border-color .12s, transform .12s", transform: imageDropTarget || mcpHot ? "translateY(-2px)" : "none", animation: mcpHot ? "mcpNodePulse 1.2s ease-out 2" : "none" }}>
               {imageDropTarget && (
                 <div data-image-drop-node-tip="1" style={{ position: "absolute", inset: 8, borderRadius: 12, border: `1.5px dashed ${C.indigo}`, background: "rgba(239,246,255,.8)", display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 4, backdropFilter: "blur(2px)", WebkitBackdropFilter: "blur(2px)" }}>
                   <span style={{ padding: "6px 10px", borderRadius: 999, background: C.indigo, color: "#fff", fontFamily: sans, fontSize: 11.5, fontWeight: 850, boxShadow: "0 8px 18px rgba(37,99,235,.22)" }}>{n.proto ? "松开替换原型" : "松开添加原型"}</span>
@@ -2969,7 +3200,7 @@ function HtmlPrototypeFrame({ src, title = "HTML 原型", interactive = false, r
   const wrapRef = useRef(null);
   const [wrapWidth, setWrapWidth] = useState(HTML_PROTO_VIEWPORT_W);
   const srcDoc = useMemo(() => htmlFromDataUrl(src), [src]);
-  const frameRatio = htmlProtoRatio(ratio);
+  const frameRatio = normalizeHtmlProtoStoredRatio(ratio);
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return undefined;

@@ -68,6 +68,9 @@ export function createPrdApi() {
       if (currentDesignId === id) currentDesignId = null;
       return result;
     },
+    async getMcpActivity(limit = 24) {
+      return request(`/api/mcp/activity?limit=${encodeURIComponent(limit)}`);
+    },
     async listComments(id = currentDesignId) {
       if (!id) return { comments: [] };
       return request(`/api/designs/${encodeURIComponent(id)}/comments`);

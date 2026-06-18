@@ -12,8 +12,11 @@ const host = process.env.HOST || "0.0.0.0";
 const port = Number(process.env.PORT || 5180);
 const dbPath = resolve(rootDir, process.env.DATABASE_PATH || "data/prd-canvas.sqlite");
 const storageRoot = resolve(process.env.STORAGE_ROOT || "/Volumes/ENERJOY-PUBLIC-DES/prd-canvas-storage");
+const apiToken = String(process.env.PRD_CANVAS_API_TOKEN || "").trim();
 const cookieName = "prd_canvas_session";
 const sessionDays = 30;
+const htmlProtoDefaultRatio = 844 / 390;
+const htmlProtoInvertedDefaultRatio = 390 / 844;
 
 mkdirSync(dirname(dbPath), { recursive: true });
 mkdirSync(storageRoot, { recursive: true });
@@ -74,6 +77,18 @@ db.exec(`
     content TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS mcp_activity (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    design_id TEXT,
+    phase TEXT NOT NULL,
+    message TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    progress INTEGER,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
 `);
 
 const statements = {
@@ -116,6 +131,16 @@ const statements = {
   `),
   insertComment: db.prepare("INSERT INTO comments (id, design_id, author_id, anchor_type, anchor_json, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"),
   deleteCommentsForDesign: db.prepare("DELETE FROM comments WHERE design_id = ?"),
+  insertMcpActivity: db.prepare("INSERT INTO mcp_activity (id, owner_id, design_id, phase, message, detail_json, progress, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+  listMcpActivity: db.prepare(`
+    SELECT mcp_activity.*, designs.title AS design_title
+    FROM mcp_activity
+    LEFT JOIN designs ON designs.id = mcp_activity.design_id
+    WHERE mcp_activity.owner_id = ?
+    ORDER BY datetime(mcp_activity.created_at) DESC
+    LIMIT ?
+  `),
+  pruneMcpActivity: db.prepare("DELETE FROM mcp_activity WHERE datetime(created_at) < datetime(?, '-7 days')"),
 };
 
 function nowISO() {
@@ -140,6 +165,35 @@ function parseCookies(req) {
     if (index < 0) return null;
     return [decodeURIComponent(part.slice(0, index).trim()), decodeURIComponent(part.slice(index + 1).trim())];
   }).filter(Boolean));
+}
+
+function headerValue(req, name) {
+  const value = req.headers[String(name).toLowerCase()];
+  return Array.isArray(value) ? value[0] : value || "";
+}
+
+function safeTokenEqual(a, b) {
+  const left = Buffer.from(String(a || ""));
+  const right = Buffer.from(String(b || ""));
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function getBearerToken(req) {
+  const auth = headerValue(req, "authorization");
+  const match = String(auth || "").match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : "";
+}
+
+function isMcpApiAuthorized(req) {
+  return !!apiToken && safeTokenEqual(getBearerToken(req), apiToken);
+}
+
+function getMcpOwnerUsername(req) {
+  return String(
+    headerValue(req, "x-canvas-owner-username")
+    || headerValue(req, "x-prd-canvas-owner-username")
+    || "",
+  ).trim();
 }
 
 function setSessionCookie(res, token, expiresAt) {
@@ -195,12 +249,22 @@ function publicUser(row) {
 
 function getCurrentUser(req) {
   const token = parseCookies(req)[cookieName];
-  if (!token) return null;
-  return publicUser(statements.sessionUser.get(token, nowISO()));
+  if (token) {
+    const cookieUser = publicUser(statements.sessionUser.get(token, nowISO()));
+    if (cookieUser) return cookieUser;
+  }
+  if (!isMcpApiAuthorized(req)) return null;
+  const ownerUsername = getMcpOwnerUsername(req);
+  if (!ownerUsername) return null;
+  return publicUser(statements.userByUsername.get(ownerUsername));
 }
 
 function requireUser(req, res) {
   const user = getCurrentUser(req);
+  if (!user && isMcpApiAuthorized(req)) {
+    safeError(res, 401, "MCP API Token 已通过，但缺少或找不到 X-Canvas-Owner-Username 对应账号。请先在网页创建该账号，并在 MCP 配置里设置 PRD_CANVAS_MCP_OWNER_USERNAME。");
+    return null;
+  }
   if (!user) safeError(res, 401, "请先登录");
   return user;
 }
@@ -217,10 +281,28 @@ function normalizeStatus(doc) {
   return meta.requirementStatus === "done" && meta.submittedAt ? "done" : "writing";
 }
 
+function normalizeHtmlProtoRatio(value) {
+  const ratio = Number(value);
+  if (!Number.isFinite(ratio) || ratio <= 0) return htmlProtoDefaultRatio;
+  if (ratio < 1 && Math.abs(ratio - htmlProtoInvertedDefaultRatio) < 0.08) return htmlProtoDefaultRatio;
+  return Math.min(4, Math.max(0.25, ratio));
+}
+
+function normalizeDocPrototypeRatios(doc) {
+  if (!doc || typeof doc !== "object" || !Array.isArray(doc.nodes)) return doc;
+  doc.nodes = doc.nodes.map((node) => {
+    if (!node || typeof node !== "object") return node;
+    const isHtml = node.proto && (node.protoKind === "html" || /^data:text\/html/i.test(String(node.proto)));
+    if (!isHtml) return node;
+    return { ...node, protoKind: "html", protoRatio: normalizeHtmlProtoRatio(node.protoRatio) };
+  });
+  return doc;
+}
+
 function parseStoredDoc(dataJson) {
   let parsed = {};
   try { parsed = JSON.parse(dataJson || "{}"); } catch {}
-  return unwrapStoredDoc(parsed);
+  return normalizeDocPrototypeRatios(unwrapStoredDoc(parsed));
 }
 
 function unwrapStoredDoc(value) {
@@ -340,6 +422,69 @@ function summarizeComment(row) {
     content: row.content,
     createdAt: row.created_at,
   };
+}
+
+function sanitizeMcpActivityBody(body) {
+  const rawProgress = Number(body.progress);
+  let detail = body.detail;
+  if (detail === undefined) detail = {};
+  if (typeof detail === "string") detail = { text: detail.slice(0, 2000) };
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) detail = {};
+  return {
+    designId: body.designId ? String(body.designId).trim().slice(0, 120) : "",
+    phase: String(body.phase || "work").replace(/[^\w\u4e00-\u9fa5-]/g, "_").slice(0, 40) || "work",
+    message: String(body.message || "MCP 正在处理").trim().slice(0, 240) || "MCP 正在处理",
+    detail,
+    progress: Number.isFinite(rawProgress) ? Math.max(0, Math.min(100, Math.round(rawProgress))) : null,
+    status: ["running", "done", "error", "idle"].includes(body.status) ? body.status : "running",
+  };
+}
+
+function summarizeMcpActivity(row) {
+  let detail = {};
+  try { detail = JSON.parse(row.detail_json || "{}"); } catch {}
+  return {
+    id: row.id,
+    ownerId: row.owner_id,
+    designId: row.design_id || "",
+    designTitle: row.design_title || "",
+    phase: row.phase,
+    message: row.message,
+    detail,
+    progress: row.progress == null ? null : Number(row.progress),
+    status: row.status || "running",
+    createdAt: row.created_at,
+  };
+}
+
+function recordMcpActivity(user, body) {
+  const activity = sanitizeMcpActivityBody(body || {});
+  const created = nowISO();
+  const id = randomUUID();
+  statements.insertMcpActivity.run(
+    id,
+    user.id,
+    activity.designId || null,
+    activity.phase,
+    activity.message,
+    JSON.stringify(activity.detail || {}),
+    activity.progress,
+    activity.status,
+    created,
+  );
+  statements.pruneMcpActivity.run(created);
+  return summarizeMcpActivity({
+    id,
+    owner_id: user.id,
+    design_id: activity.designId || "",
+    design_title: "",
+    phase: activity.phase,
+    message: activity.message,
+    detail_json: JSON.stringify(activity.detail || {}),
+    progress: activity.progress,
+    status: activity.status,
+    created_at: created,
+  });
 }
 
 function summarizeDesign(row, user) {
@@ -979,6 +1124,44 @@ async function handleApi(req, res) {
   const path = url.pathname;
 
   try {
+    if (req.method === "GET" && path === "/api/mcp/users") {
+      if (!isMcpApiAuthorized(req)) return safeError(res, 401, "MCP API Token 无效或未配置");
+      const users = db.prepare("SELECT id, username, display_name, created_at FROM users ORDER BY datetime(created_at) ASC").all()
+        .map(publicUser);
+      return sendJson(res, 200, { users });
+    }
+
+    if (req.method === "GET" && path === "/api/mcp/health") {
+      if (!isMcpApiAuthorized(req)) return safeError(res, 401, "MCP API Token 无效或未配置");
+      return sendJson(res, 200, { ok: true, mode: "central-api", users: "/api/mcp/users" });
+    }
+
+    if (req.method === "POST" && path === "/api/mcp/activity") {
+      if (!isMcpApiAuthorized(req)) return safeError(res, 401, "MCP API Token 无效或未配置");
+      const user = requireUser(req, res);
+      if (!user) return;
+      const body = await readJson(req, 512 * 1024);
+      const activity = recordMcpActivity(user, body);
+      return sendJson(res, 201, { activity });
+    }
+
+    if (req.method === "GET" && path === "/api/mcp/activity") {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const limit = Math.max(1, Math.min(80, Number(url.searchParams.get("limit") || 24) || 24));
+      const events = statements.listMcpActivity.all(user.id, limit).map(summarizeMcpActivity);
+      const latest = events[0] || null;
+      const latestTime = latest ? Date.parse(latest.createdAt) : 0;
+      const ageMs = latestTime ? Date.now() - latestTime : Infinity;
+      const active = !!latest && ageMs < 18000 && latest.status !== "idle";
+      return sendJson(res, 200, {
+        connected: true,
+        active,
+        latest,
+        events,
+      });
+    }
+
     if (req.method === "POST" && path === "/api/auth/register") {
       const body = await readJson(req);
       const username = String(body.username || "").trim();
@@ -1039,6 +1222,7 @@ async function handleApi(req, res) {
         ownerId: user.id,
         updatedAt: now,
       };
+      normalizeDocPrototypeRatios(doc);
       const title = String(doc.meta.name || body.title || "未命名设计单").trim() || "未命名设计单";
       const product = String(doc.meta.product || body.product || "ShutEye").trim() || "ShutEye";
       const status = normalizeStatus(doc);
@@ -1075,6 +1259,7 @@ async function handleApi(req, res) {
         ownerId: row.owner_id,
         updatedAt: now,
       };
+      normalizeDocPrototypeRatios(doc);
       const status = normalizeStatus(doc);
       const submittedAt = status === "done" ? doc.meta.submittedAt || now : null;
       const title = String(doc.meta.name || "未命名设计单").trim() || "未命名设计单";
