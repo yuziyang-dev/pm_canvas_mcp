@@ -2,9 +2,10 @@ import { createServer } from "node:http";
 import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { createServer as createViteServer } from "vite";
+import { ZipFile } from "yazl";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const host = process.env.HOST || "0.0.0.0";
@@ -405,6 +406,567 @@ function contentTypeForPath(path, fallback = "application/octet-stream") {
   return map[ext] || fallback;
 }
 
+function sha256(buffer) {
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
+function exportSlug(value, fallback = "item") {
+  const raw = htmlToPlainText(value || "").toLowerCase();
+  const ascii = raw
+    .replace(/['"]/g, "")
+    .replace(/[^a-z0-9]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  const id = ascii || fallback;
+  return id.replace(/-{2,}/g, "-") || fallback;
+}
+
+function escapeMarkdownCell(value) {
+  return htmlToPlainText(value || "未填写").replace(/\|/g, "\\|").replace(/\n+/g, " / ").trim() || "未填写";
+}
+
+function exportMdValue(value, fallback = "未填写") {
+  const text = exportHtmlToMarkdown(value).trim();
+  return text || fallback;
+}
+
+function exportHtmlToMarkdown(value) {
+  const raw = String(value || "");
+  if (!raw) return "";
+  if (!/[<&]/.test(raw)) return raw.replace(/\n{3,}/g, "\n\n").trim();
+  const text = raw
+    .replace(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi, (_, attrs, label) => {
+      const href = (attrs.match(/\bhref=(["'])(.*?)\1/i) || attrs.match(/\bhref=([^\s>]+)/i) || [])[2] || (attrs.match(/\bhref=([^\s>]+)/i) || [])[1] || "";
+      const body = htmlToPlainText(label) || href;
+      return href ? `[${body}](${href})` : body;
+    })
+    .replace(/<img\b([^>]*)>/gi, (_, attrs) => {
+      const alt = (attrs.match(/\balt=(["'])(.*?)\1/i) || [])[2] || "";
+      return alt ? `[图片: ${alt}]` : "[图片]";
+    })
+    .replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, "**$2**")
+    .replace(/<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi, "*$2*")
+    .replace(/<mark[^>]*>([\s\S]*?)<\/mark>/gi, "==$1==")
+    .replace(/<li[^>]*>/gi, "- ")
+    .replace(/<\/(div|p|li|h[1-6])>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"');
+  return text.replace(/\n{3,}/g, "\n\n").replace(/[ \t]+\n/g, "\n").trim();
+}
+
+function extractImageSourcesFromHtml(value) {
+  const raw = String(value || "");
+  if (!raw || !/<img\b/i.test(raw)) return [];
+  const sources = [];
+  raw.replace(/<img\b([^>]*)>/gi, (_, attrs) => {
+    const src = (attrs.match(/\bsrc=(["'])(.*?)\1/i) || attrs.match(/\bsrc=([^\s>]+)/i) || [])[2] || (attrs.match(/\bsrc=([^\s>]+)/i) || [])[1] || "";
+    const alt = (attrs.match(/\balt=(["'])(.*?)\1/i) || [])[2] || "";
+    if (src) sources.push({ src, alt });
+    return "";
+  });
+  return sources;
+}
+
+function fileIdFromAssetSrc(src) {
+  const raw = String(src || "");
+  const match = raw.match(/\/api\/files\/([^/?#]+)/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+function bufferFromAssetSrc(src) {
+  const raw = String(src || "");
+  if (!raw) return null;
+  if (/^data:/i.test(raw)) {
+    const parsed = dataUrlToBuffer(raw);
+    return parsed ? { ...parsed, originalName: "", sourceType: "data-url" } : null;
+  }
+  const fileId = fileIdFromAssetSrc(raw);
+  if (fileId) {
+    const file = statements.getFile.get(fileId);
+    if (!file) return null;
+    const abs = safeStoragePath(file.relative_path);
+    if (!abs || !existsSync(abs)) return null;
+    return {
+      buffer: readFileSync(abs),
+      mimeType: file.mime_type || contentTypeForPath(abs),
+      originalName: file.original_name || fileId,
+      sourceType: "uploaded-file",
+      fileId,
+    };
+  }
+  return null;
+}
+
+function uniqueExportPath(path, used) {
+  const clean = String(path || "asset").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!used.has(clean)) {
+    used.add(clean);
+    return clean;
+  }
+  const dot = clean.lastIndexOf(".");
+  const base = dot > 0 ? clean.slice(0, dot) : clean;
+  const ext = dot > 0 ? clean.slice(dot) : "";
+  let index = 2;
+  while (used.has(`${base}-${index}${ext}`)) index += 1;
+  const next = `${base}-${index}${ext}`;
+  used.add(next);
+  return next;
+}
+
+function buildExportPackage(row, doc, user) {
+  const now = nowISO();
+  const nodes = Array.isArray(doc?.nodes) ? doc.nodes : [];
+  const edges = Array.isArray(doc?.edges) ? doc.edges : [];
+  const groups = Array.isArray(doc?.groups) ? doc.groups : [];
+  const nodeById = Object.fromEntries(nodes.map((node) => [node.id, node]));
+  const title = row?.title || doc?.meta?.name || "未命名设计单";
+  const product = row?.product || doc?.meta?.product || "ShutEye";
+  const status = normalizeStatus(doc);
+  const rootSlug = exportSlug(title, "prd-canvas-export");
+  const usedPaths = new Set();
+  const files = [];
+  const warnings = [];
+  const assetRefs = [];
+  const assetBySrc = new Map();
+
+  const addFile = (path, content, type = "document", mimeType = contentTypeForPath(path)) => {
+    const buffer = Buffer.isBuffer(content) ? content : Buffer.from(String(content ?? ""), "utf8");
+    const finalPath = uniqueExportPath(path, usedPaths);
+    files.push({ path: finalPath, buffer, type, mimeType, sha256: sha256(buffer), size: buffer.length });
+    return finalPath;
+  };
+
+  const addAsset = ({ src, desiredPath, role, label, fallbackMime = "application/octet-stream" }) => {
+    const raw = String(src || "");
+    if (!raw) return null;
+    if (assetBySrc.has(raw)) return assetBySrc.get(raw);
+    const resolved = bufferFromAssetSrc(raw);
+    if (!resolved) {
+      const external = {
+        source: raw,
+        path: "",
+        role,
+        label,
+        status: "external",
+        mimeType: "",
+        size: 0,
+      };
+      assetRefs.push(external);
+      assetBySrc.set(raw, external);
+      warnings.push(`资源未打包，仅保留外部引用：${label || raw.slice(0, 80)}`);
+      return external;
+    }
+    const mimeType = resolved.mimeType || fallbackMime;
+    const ext = extensionFromMime(mimeType, resolved.originalName || desiredPath) || ".bin";
+    const pathWithExt = extname(desiredPath || "") ? desiredPath : `${desiredPath || "assets/file"}${ext}`;
+    const finalPath = addFile(pathWithExt, resolved.buffer, "asset", mimeType);
+    const ref = {
+      source: raw,
+      path: finalPath,
+      role,
+      label,
+      status: "packaged",
+      mimeType,
+      size: resolved.buffer.length,
+      sha256: sha256(resolved.buffer),
+      originalName: resolved.originalName || "",
+    };
+    assetRefs.push(ref);
+    assetBySrc.set(raw, ref);
+    return ref;
+  };
+
+  nodes.forEach((node, index) => {
+    const slug = exportSlug(node?.name, `page-${index + 1}`);
+    if (node?.proto) {
+      const isHtml = node.protoKind === "html" || /^data:text\/html/i.test(String(node.proto));
+      addAsset({
+        src: node.proto,
+        desiredPath: isHtml ? `assets/prototypes/${slug}.html` : `assets/images/prototypes/${slug}`,
+        role: isHtml ? "html-prototype" : "image-prototype",
+        label: `${node.name || `页面 ${index + 1}`}原型`,
+        fallbackMime: isHtml ? "text/html" : "image/png",
+      });
+    }
+    (node?.competitors || []).forEach((item, compIndex) => {
+      if (!item?.img) return;
+      addAsset({
+        src: item.img,
+        desiredPath: `assets/images/references/${slug}-reference-${compIndex + 1}`,
+        role: "competitor-reference",
+        label: item.caption || `${node.name || `页面 ${index + 1}`}竞品参考 ${compIndex + 1}`,
+        fallbackMime: "image/png",
+      });
+    });
+    const richFields = [
+      { value: node?.note, label: `${node?.name || `页面 ${index + 1}`} 页面说明` },
+      { value: node?.expGoal, label: `${node?.name || `页面 ${index + 1}`} 体验目标` },
+      ...Object.values(node?.docTableBaseCells || {}).flat().map((value, i) => ({ value, label: `${node?.name || `页面 ${index + 1}`} 表格基础图片 ${i + 1}` })),
+      ...(node?.docTableRows || []).flatMap((rowItem, rowIndex) => (rowItem?.cells || []).map((value, cellIndex) => ({ value, label: `${node?.name || `页面 ${index + 1}`} 自定义表格 ${rowIndex + 1}-${cellIndex + 1}` }))),
+    ];
+    richFields.forEach((field, fieldIndex) => {
+      extractImageSourcesFromHtml(field.value).forEach((img, imageIndex) => {
+        addAsset({
+          src: img.src,
+          desiredPath: `assets/images/doc/${slug}-doc-${fieldIndex + 1}-${imageIndex + 1}`,
+          role: "document-image",
+          label: img.alt || field.label,
+          fallbackMime: "image/png",
+        });
+      });
+    });
+  });
+  [
+    { value: doc?.meta?.background, label: "需求背景" },
+    { value: doc?.meta?.dataGoals, label: "数据目标" },
+    { value: doc?.meta?.expGoals, label: "体验目标" },
+  ].forEach((field, fieldIndex) => {
+    extractImageSourcesFromHtml(field.value).forEach((img, imageIndex) => {
+      addAsset({
+        src: img.src,
+        desiredPath: `assets/images/doc/project-${fieldIndex + 1}-${imageIndex + 1}`,
+        role: "document-image",
+        label: img.alt || field.label,
+        fallbackMime: "image/png",
+      });
+    });
+  });
+
+  const assetPathFor = (src) => assetBySrc.get(String(src || ""))?.path || "";
+  const pageSlug = (node, index = 0) => exportSlug(node?.name, `page-${index + 1}`);
+  const pageOkfPath = (node, index = 0) => `okf/pages/${pageSlug(node, index)}.md`;
+  const pageMarkdownLink = (node, index = 0) => `[${node?.name || `页面 ${index + 1}`}](${pageOkfPath(node, index).replace(/^okf\//, "./")})`;
+
+  const requirements = [];
+  requirements.push(`# ${title}`);
+  requirements.push("");
+  requirements.push(`创建人：${doc?.meta?.createdBy || row?.owner_name || "未填写"}`);
+  requirements.push(`创建时间：${doc?.meta?.createdAt || row?.created_at || "未填写"}`);
+  requirements.push(`最近修改：${doc?.meta?.updatedAt || row?.updated_at || "未填写"}`);
+  requirements.push(`所属产品：${product}`);
+  requirements.push(`设计单状态：${status === "done" ? "已完成" : "编写中"}`);
+  requirements.push(`页面数量：${nodes.length}`);
+  requirements.push("");
+  requirements.push("## 一、需求背景");
+  requirements.push("");
+  requirements.push(exportMdValue(doc?.meta?.background));
+  requirements.push("");
+  requirements.push("## 二、目标");
+  requirements.push("");
+  requirements.push("### 数据目标");
+  requirements.push("");
+  requirements.push(exportMdValue(doc?.meta?.dataGoals));
+  requirements.push("");
+  requirements.push("### 体验目标");
+  requirements.push("");
+  requirements.push(exportMdValue(doc?.meta?.expGoals));
+  requirements.push("");
+  requirements.push("## 三、总流程");
+  requirements.push("");
+  if (edges.length) {
+    edges.forEach((edge) => {
+      const from = nodeById[edge.from];
+      const to = nodeById[edge.to];
+      requirements.push(`- ${from?.name || "未知页面"} → ${to?.name || "未知页面"}：${exportMdValue(edge.label, "未命名操作")}`);
+    });
+  } else {
+    requirements.push("未填写");
+  }
+  requirements.push("");
+  requirements.push("## 四、页面明细");
+  requirements.push("");
+  if (!nodes.length) {
+    requirements.push("未填写");
+  }
+  nodes.forEach((node, index) => {
+    const protoPath = assetPathFor(node.proto);
+    const baseCells = node.docTableBaseCells && typeof node.docTableBaseCells === "object" ? node.docTableBaseCells : {};
+    const customRows = Array.isArray(node.docTableRows) ? node.docTableRows : [];
+    const outgoing = edges.filter((edge) => edge.from === node.id);
+    requirements.push(`### ${index + 1}. ${node.name || "未命名页面"}`);
+    requirements.push("");
+    requirements.push(`节点 ID：\`${node.id}\``);
+    requirements.push(`原型文件：${protoPath ? `\`${protoPath}\`` : "未添加"}`);
+    requirements.push("");
+    requirements.push("#### 页面说明");
+    requirements.push("");
+    requirements.push(exportMdValue(node.note));
+    (baseCells.note || []).forEach((cell, cellIndex) => {
+      requirements.push("");
+      requirements.push(`补充说明 ${cellIndex + 1}：${exportMdValue(cell)}`);
+    });
+    requirements.push("");
+    requirements.push("#### 体验目标");
+    requirements.push("");
+    requirements.push(exportMdValue(node.expGoal));
+    (baseCells.expGoal || []).forEach((cell, cellIndex) => {
+      requirements.push("");
+      requirements.push(`补充目标 ${cellIndex + 1}：${exportMdValue(cell)}`);
+    });
+    if (customRows.length) {
+      requirements.push("");
+      requirements.push("#### 补充记录");
+      requirements.push("");
+      customRows.forEach((rowItem) => {
+        requirements.push(`- ${exportMdValue(rowItem.label, "自定义项")}`);
+        (rowItem.cells || []).forEach((cell, cellIndex) => {
+          requirements.push(`  - 内容 ${cellIndex + 1}：${exportMdValue(cell)}`);
+        });
+      });
+    }
+    requirements.push("");
+    requirements.push("#### 页面跳转");
+    requirements.push("");
+    if (outgoing.length) {
+      requirements.push("| 触发方式 | 跳转目标 |");
+      requirements.push("|---|---|");
+      outgoing.forEach((edge) => {
+        const target = nodeById[edge.to];
+        requirements.push(`| ${escapeMarkdownCell(edge.label || "未命名操作")} | ${escapeMarkdownCell(target?.name || "未知页面")} |`);
+      });
+    } else {
+      requirements.push("未填写");
+    }
+    if (node.competitors?.length) {
+      requirements.push("");
+      requirements.push("#### 竞品参考");
+      requirements.push("");
+      node.competitors.forEach((item, refIndex) => {
+        const path = assetPathFor(item.img);
+        requirements.push(`- 参考 ${refIndex + 1}：${exportMdValue(item.caption)}${path ? `（${path}）` : ""}`);
+      });
+    }
+    requirements.push("");
+  });
+
+  const readme = `# ${title} 导出包
+
+这是 PRD Canvas 稳定机器导出的需求资源包。
+
+推荐阅读顺序：
+
+1. \`requirements.md\`
+2. \`okf/index.md\`
+3. \`assets/prototypes/\` 和 \`assets/images/\`
+4. \`canvas.json\`
+
+如需重新导入 Canvas，请使用 \`canvas.json\`。评论内容不包含在本导出包内。
+`;
+
+  const okfIndex = `---
+type: Product Requirement Export
+title: ${title}
+product: ${product}
+timestamp: ${now}
+---
+
+# ${title}
+
+- 项目概览：[project.md](./project.md)
+- 页面明细：${nodes.length ? nodes.map((node, index) => pageMarkdownLink(node, index)).join("、") : "未填写"}
+- 总流程：[flows/main_flow.md](./flows/main_flow.md)
+- 业务分组：${groups.length ? groups.map((group, index) => `[${group.name || `分组 ${index + 1}`}](./groups/${exportSlug(group.name, `group-${index + 1}`)}.md)`).join("、") : "未填写"}
+- 竞品参考：[references/competitor_refs.md](./references/competitor_refs.md)
+`;
+
+  const projectMd = `---
+type: Product Requirement Project
+title: ${title}
+product: ${product}
+status: ${status}
+timestamp: ${now}
+---
+
+# ${title}
+
+## 需求背景
+
+${exportMdValue(doc?.meta?.background)}
+
+## 数据目标
+
+${exportMdValue(doc?.meta?.dataGoals)}
+
+## 体验目标
+
+${exportMdValue(doc?.meta?.expGoals)}
+`;
+
+  const flowMd = [
+    "---",
+    "type: Product Requirement Flow",
+    `title: ${title} 总流程`,
+    `product: ${product}`,
+    `timestamp: ${now}`,
+    "---",
+    "",
+    `# ${title} 总流程`,
+    "",
+    edges.length ? "| 起点 | 触发方式 | 终点 |\n|---|---|---|" : "未填写",
+    ...edges.map((edge) => {
+      const from = nodeById[edge.from];
+      const to = nodeById[edge.to];
+      const fromIndex = Math.max(0, nodes.findIndex((node) => node.id === edge.from));
+      const toIndex = Math.max(0, nodes.findIndex((node) => node.id === edge.to));
+      return `| ${from ? pageMarkdownLink(from, fromIndex) : "未知页面"} | ${escapeMarkdownCell(edge.label || "未命名操作")} | ${to ? pageMarkdownLink(to, toIndex) : "未知页面"} |`;
+    }),
+  ].join("\n");
+
+  const competitorMd = [
+    "---",
+    "type: Product Requirement References",
+    `title: ${title} 竞品参考`,
+    `product: ${product}`,
+    `timestamp: ${now}`,
+    "---",
+    "",
+    "# 竞品参考",
+    "",
+  ];
+  let hasCompetitor = false;
+  nodes.forEach((node, nodeIndex) => {
+    (node.competitors || []).forEach((item, refIndex) => {
+      hasCompetitor = true;
+      competitorMd.push(`## ${node.name || `页面 ${nodeIndex + 1}`} · 参考 ${refIndex + 1}`);
+      competitorMd.push("");
+      competitorMd.push(exportMdValue(item.caption));
+      const path = assetPathFor(item.img);
+      if (path) competitorMd.push(`\n资源：../../${path}`);
+      competitorMd.push("");
+    });
+  });
+  if (!hasCompetitor) competitorMd.push("未填写");
+
+  addFile("README.md", readme);
+  addFile("requirements.md", requirements.join("\n").replace(/\n{3,}/g, "\n\n"));
+  addFile("canvas.json", JSON.stringify(doc || {}, null, 2), "source", "application/json; charset=utf-8");
+  addFile("okf/index.md", okfIndex);
+  addFile("okf/project.md", projectMd);
+  addFile("okf/flows/main_flow.md", flowMd);
+  addFile("okf/references/competitor_refs.md", competitorMd.join("\n"));
+  addFile("assets/thumbnails/README.md", "# thumbnails\n\n缩略图目录保留给后续版本生成，不影响当前资源包使用。\n");
+
+  nodes.forEach((node, index) => {
+    const outgoing = edges.filter((edge) => edge.from === node.id);
+    const protoPath = assetPathFor(node.proto);
+    const pageMd = `---
+type: Product Requirement Page
+id: ${node.id}
+title: ${node.name || "未命名页面"}
+product: ${product}
+prototype: ${protoPath ? `../../${protoPath}` : ""}
+tags: [page, prototype]
+---
+
+# ${node.name || "未命名页面"}
+
+## 页面说明
+
+${exportMdValue(node.note)}
+
+## 体验目标
+
+${exportMdValue(node.expGoal)}
+
+## 页面跳转
+
+${outgoing.length ? outgoing.map((edge) => {
+  const target = nodeById[edge.to];
+  const targetIndex = Math.max(0, nodes.findIndex((item) => item.id === edge.to));
+  return `- ${exportMdValue(edge.label, "未命名操作")} → ${target ? `[${target.name || "未命名页面"}](./${pageSlug(target, targetIndex)}.md)` : "未知页面"}`;
+}).join("\n") : "未填写"}
+`;
+    addFile(pageOkfPath(node, index), pageMd);
+  });
+
+  groups.forEach((group, index) => {
+    const groupNodes = (group.nodeIds || []).map((id) => nodeById[id]).filter(Boolean);
+    const body = `---
+type: Product Requirement Group
+id: ${group.id || `group-${index + 1}`}
+title: ${group.name || `分组 ${index + 1}`}
+product: ${product}
+timestamp: ${now}
+---
+
+# ${group.name || `分组 ${index + 1}`}
+
+${groupNodes.length ? groupNodes.map((node) => {
+  const nodeIndex = Math.max(0, nodes.findIndex((item) => item.id === node.id));
+  return `- ${pageMarkdownLink(node, nodeIndex)}`;
+}).join("\n") : "未填写"}
+`;
+    addFile(`okf/groups/${exportSlug(group.name, `group-${index + 1}`)}.md`, body);
+  });
+
+  const manifest = {
+    schema: "prd-canvas-export/1.0",
+    exportId: `exp_${randomUUID()}`,
+    projectId: row?.id || "",
+    title,
+    product,
+    status,
+    exportedAt: now,
+    exportedBy: {
+      id: user?.id || "",
+      name: user?.displayName || "",
+    },
+    createdBy: {
+      id: doc?.meta?.ownerId || row?.owner_id || "",
+      name: doc?.meta?.createdBy || row?.owner_name || "",
+    },
+    createdAt: doc?.meta?.createdAt || row?.created_at || "",
+    updatedAt: doc?.meta?.updatedAt || row?.updated_at || "",
+    pageCount: nodes.length,
+    nodeCount: nodes.length,
+    edgeCount: edges.length,
+    assetCount: assetRefs.filter((asset) => asset.status === "packaged").length,
+    assets: assetRefs,
+    files: files.map((file) => ({
+      path: file.path,
+      type: file.type,
+      mimeType: file.mimeType,
+      size: file.size,
+      sha256: file.sha256,
+    })),
+  };
+  addFile("manifest.json", JSON.stringify(manifest, null, 2), "manifest", "application/json; charset=utf-8");
+  addFile("export-log.json", JSON.stringify({
+    exportedAt: now,
+    generator: "prd-canvas-exporter/1.0",
+    warnings,
+    assetCount: manifest.assetCount,
+    missingAssetCount: assetRefs.filter((asset) => asset.status !== "packaged").length,
+  }, null, 2), "log", "application/json; charset=utf-8");
+
+  return {
+    title,
+    zipName: `${rootSlug}-export.zip`,
+    files,
+  };
+}
+
+function sendZip(res, packageData) {
+  const zip = new ZipFile();
+  packageData.files.forEach((file) => {
+    zip.addBuffer(file.buffer, file.path, {
+      mtime: new Date(),
+      mode: 0o100644,
+    });
+  });
+  zip.end();
+  res.writeHead(200, {
+    "Content-Type": "application/zip",
+    "Content-Disposition": `attachment; filename="${encodeURIComponent(packageData.zipName)}"`,
+  });
+  zip.outputStream.pipe(res);
+}
+
 function safeStoragePath(relativePath) {
   const normalized = normalize(relativePath || "").replace(/^(\.\.(\/|\\|$))+/, "");
   const abs = resolve(storageRoot, normalized);
@@ -577,6 +1139,20 @@ async function handleApi(req, res) {
       const filePath = join(exportDir, "requirement.md");
       writeFileSync(filePath, markdown, "utf8");
       return sendJson(res, 200, { ok: true, url: `/api/export/${row.id}/requirement.md` });
+    }
+
+    const exportPackageMatch = path.match(/^\/api\/designs\/([^/]+)\/export-package$/);
+    if (exportPackageMatch && req.method === "POST") {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const row = statements.getDesign.get(exportPackageMatch[1]);
+      if (!row) return safeError(res, 404, "设计单不存在");
+      const body = await readJson(req, 120 * 1024 * 1024);
+      const bodyDoc = body.doc && typeof body.doc === "object" ? body.doc : null;
+      const doc = bodyDoc && row.owner_id === user.id ? unwrapStoredDoc(bodyDoc) : parseStoredDoc(row.data_json);
+      const packageData = buildExportPackage(row, doc, user);
+      sendZip(res, packageData);
+      return;
     }
 
     if (req.method === "POST" && path === "/api/files") {

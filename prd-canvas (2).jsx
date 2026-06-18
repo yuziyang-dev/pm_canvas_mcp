@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import Fuse from "fuse.js";
 import { pinyin } from "pinyin-pro";
+import CanvasLogoMark from "./src/canvas-logo.jsx";
 
 /* ============ 令牌:浅色玻璃画布工具 ============ */
 const C = {
@@ -942,7 +943,7 @@ function ManagerSidebar({ active = "设计单", currentUser = null, onLogout = n
     <aside className="manager-sidebar" style={{ position: "fixed", left: 16, top: 8, bottom: 8, width: 176, background: C.glass, border: `1px solid ${C.line}`, borderRadius: 18, padding: 10, display: "flex", flexDirection: "column", flexShrink: 0, boxShadow: "0 8px 32px -4px rgba(15,23,42,.08), 0 4px 12px -2px rgba(15,23,42,.04)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", zIndex: 10 }}>
       <div style={{ padding: "10px 10px 12px", display: "flex", alignItems: "center", marginBottom: 4 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 850, fontSize: 14, minWidth: 0 }}>
-          <span style={{ width: 32, height: 32, borderRadius: 8, background: C.indigoSoft, color: C.indigo, border: "1px solid #BFDBFE", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 900, flexShrink: 0 }}>PR</span>
+          <CanvasLogoMark size={30} color={C.indigo} />
           需求画布
         </div>
       </div>
@@ -1600,7 +1601,7 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
   const [comments, setComments] = useState([]);
   const [managerScope, setManagerScope] = useState("mine");
   const [managerLoading, setManagerLoading] = useState(false);
-  const [mode, setMode] = useState("canvas"); // canvas | doc | ai
+  const [mode, setMode] = useState("canvas"); // canvas | doc | export
   const [setup, setSetup] = useState(false);
   const [sel, setSel] = useState(null); // 选中节点 id
   const [detail, setDetail] = useState(null); // 打开详情的节点 id
@@ -1975,14 +1976,14 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
               <ManagerIcon name="back" size={15} />
             </button>
           )}
-          <span style={{ width: 24, height: 24, borderRadius: 8, background: C.indigoSoft, color: C.indigo, border: "1px solid #BFDBFE", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, flexShrink: 0 }}>PR</span>
+          <CanvasLogoMark size={22} color={C.indigo} />
           <span style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 260 }}>{doc.meta.name || "需求画布"}</span>
           <span style={{ color: C.line }}> / </span>
           <button type="button" disabled={readOnly} title={readOnly ? "已完成设计单处于阅读状态" : "需求信息"} onClick={() => { if (!readOnly) setSetup(true); }}
             style={{ border: "none", background: "transparent", color: readOnly ? C.faint : C.soft, fontSize: 12.5, fontWeight: 600, cursor: readOnly ? "default" : "pointer", padding: "4px 7px", borderRadius: 8 }}>需求信息</button>
         </div>
         <div style={{ justifySelf: "center", display: "flex", alignItems: "center", gap: 6, border: `1px solid ${C.line}`, borderRadius: 999, padding: "6px 8px", background: C.glass, boxShadow: C.shadow, backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}>
-          {[["canvas", "画布视图"], ["doc", "文档视图"], ["ai", "MD视图"]].map(([k, l]) => (
+          {[["canvas", "画布视图"], ["doc", "文档视图"], ["export", "导出视图"]].map(([k, l]) => (
             <button key={k} onClick={() => setMode(k)} style={{ border: "none", height: 30, padding: "0 15px", borderRadius: 999, fontSize: 12.5, cursor: "pointer", fontFamily: sans, fontWeight: 700, background: mode === k ? C.indigoSoft : "transparent", color: mode === k ? C.indigo : C.soft, boxShadow: "none", transition: "background .18s, color .18s" }}>{l}</button>
           ))}
         </div>
@@ -1994,7 +1995,7 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
         {mode === "canvas" && <Canvas doc={doc} update={update} updateSilent={setDocSilent} pushHistory={() => { const p = docRef.current; if (p) { histRef.current.push(p); if (histRef.current.length > 60) histRef.current.shift(); } }} sel={sel} setSel={setSel} openDetail={setDetail} openDocNode={openDocNode} getClip={() => clipRef.current} setClip={(v) => { clipRef.current = v; }} readOnly={readOnly} />}
         {mode === "doc" && <DocView doc={doc} update={update} onOpenCanvas={() => setMode("canvas")} focusNodeTarget={docFocusTarget} onFocusNodeHandled={() => setDocFocusTarget(null)} readOnly={readOnly} comments={comments} onAddComment={addDocComment} currentUser={currentUser} />}
-        {mode === "ai" && <AIViewPane doc={doc} />}
+        {mode === "export" && <ExportViewPane doc={doc} apiClient={apiClient} activeDesign={activeDesign} onToast={showToast} />}
       </div>
 
       {!readOnly && setup && <SetupModal doc={doc} onSave={(meta) => { update({ ...doc, meta: { ...doc.meta, ...meta, setupDone: true } }); setSetup(false); }} onSkip={() => { update({ ...doc, meta: { ...doc.meta, setupDone: true } }); setSetup(false); }} />}
@@ -6201,6 +6202,24 @@ function DocDisplayOptions({ showPageTransitions, onShowPageTransitionsChange })
 function Empty() { return <div style={{ fontSize: 12.5, color: C.faint, fontStyle: "italic" }}>待填写</div>; }
 
 function FlowThumb({ doc, onOpenCanvas }) {
+  const wrapRef = useRef(null);
+  const [wrapW, setWrapW] = useState(0);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return undefined;
+    const update = () => {
+      const next = el.getBoundingClientRect().width || 0;
+      setWrapW((prev) => (Math.abs(prev - next) > 0.5 ? next : prev));
+    };
+    update();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+    ro?.observe(el);
+    window.addEventListener("resize", update);
+    return () => {
+      ro?.disconnect?.();
+      window.removeEventListener("resize", update);
+    };
+  }, []);
   if (!doc.nodes.length) return null;
   const pad = 30;
   const ih = (n) => (n.proto ? NODE_W * (n.protoRatio || 0.55) : 70);
@@ -6211,14 +6230,22 @@ function FlowThumb({ doc, onOpenCanvas }) {
   const minX = Math.min(...doc.nodes.map((n) => n.x)) - pad, minY = Math.min(...doc.nodes.map((n) => n.y)) - pad;
   const maxX = Math.max(...doc.nodes.map((n) => n.x + NODE_W)) + pad, maxY = Math.max(...doc.nodes.map((n) => n.y + nh(n))) + pad + (hasBack ? 110 + routes.maxBackLane * EDGE_BACK_LANE_GAP : 0);
   const w = maxX - minX, h = maxY - minY;
-  const pct = (value, total) => `${(value / Math.max(1, total)) * 100}%`;
+  const availableW = Math.max(320, wrapW || 960);
+  const maxPreviewH = 360;
+  const scale = Math.min(2.2, Math.max(0.08, Math.min(availableW / Math.max(1, w), maxPreviewH / Math.max(1, h))));
+  const scaledW = Math.max(1, w * scale);
+  const scaledH = Math.max(1, h * scale);
+  const viewportH = Math.max(180, Math.min(maxPreviewH, scaledH));
+  const offsetX = Math.max(0, (availableW - scaledW) / 2);
+  const offsetY = Math.max(0, (viewportH - scaledH) / 2);
+  const sx = (value) => value * scale;
   return (
-    <div role="button" tabIndex={0} data-flow-thumb="1" aria-label="查看流程图"
+    <div ref={wrapRef} role="button" tabIndex={0} data-flow-thumb="1" aria-label="查看流程图"
       onClick={(e) => { if (!onOpenCanvas) return; e.preventDefault(); e.stopPropagation(); onOpenCanvas(); }}
       onKeyDown={(e) => { if (!onOpenCanvas) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onOpenCanvas(); } }}
       style={{ width: "100%", padding: 0, display: "block", textAlign: "left", border: `1px solid ${C.line}`, borderRadius: 14, background: C.canvas, overflow: "hidden", cursor: onOpenCanvas ? "pointer" : "default" }}>
-      <div style={{ position: "relative", width: "100%", aspectRatio: `${w} / ${Math.max(1, h)}`, minHeight: 180, maxHeight: 360, overflow: "hidden" }}>
-        <svg viewBox={`${minX} ${minY} ${w} ${h}`} preserveAspectRatio="none" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", display: "block", pointerEvents: "none" }}>
+      <div style={{ position: "relative", width: "100%", height: viewportH, minHeight: 180, maxHeight: maxPreviewH, overflow: "hidden" }}>
+        <svg viewBox={`${minX} ${minY} ${w} ${h}`} preserveAspectRatio="xMinYMin meet" style={{ position: "absolute", left: offsetX, top: offsetY, width: scaledW, height: scaledH, display: "block", pointerEvents: "none" }}>
           <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9" fill="none" stroke={C.indigo} strokeWidth="1.6" /></marker></defs>
           {doc.edges.map((e) => {
             const f = doc.nodes.find((n) => n.id === e.from), t = doc.nodes.find((n) => n.id === e.to);
@@ -6238,11 +6265,11 @@ function FlowThumb({ doc, onOpenCanvas }) {
           const html = isHtmlProto(n);
           return (
             <div key={n.id} data-flow-thumb-proto={html ? "html" : "image"}
-              style={{ position: "absolute", left: pct(n.x - minX, w), top: pct(n.y - minY, h), width: pct(NODE_W, w), height: pct(ih(n), h), borderRadius: 12, border: `1.5px solid ${C.line}`, overflow: "hidden", background: "#fff", boxShadow: "0 8px 22px rgba(15,23,42,.06)", pointerEvents: "none" }}>
+              style={{ position: "absolute", left: offsetX + sx(n.x - minX), top: offsetY + sx(n.y - minY), width: sx(NODE_W), height: sx(ih(n)), borderRadius: Math.max(4, sx(12)), border: `1.5px solid ${C.line}`, overflow: "hidden", background: "#fff", boxShadow: "0 8px 22px rgba(15,23,42,.06)", pointerEvents: "none" }}>
               {html ? (
                 <HtmlPrototypeFrame src={n.proto} title={`${n.name || "未命名页面"} HTML 原型`} ratio={n.protoRatio} />
               ) : (
-                <img src={n.proto} alt="" draggable={false} style={{ width: "100%", height: "100%", display: "block", objectFit: "fill", WebkitUserDrag: "none" }} />
+                <img src={n.proto} alt="" draggable={false} style={{ width: "100%", height: "100%", display: "block", objectFit: "contain", background: C.lineSoft, WebkitUserDrag: "none" }} />
               )}
             </div>
           );
@@ -6267,6 +6294,450 @@ function AIViewPane({ doc }) {
         <pre style={{ fontFamily: mono, fontSize: 12, lineHeight: 1.8, color: C.ink, whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, background: "#F8FAFC", border: `1px solid ${C.line}`, borderRadius: 14, padding: 18 }}>{text}</pre>
       </div>
     </div>
+  );
+}
+
+function exportSlugClient(value, fallback = "item") {
+  const raw = htmlToMarkdownText(value || "").toLowerCase();
+  return raw
+    .replace(/['"]/g, "")
+    .replace(/[^a-z0-9]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-")
+    .slice(0, 80) || fallback;
+}
+function exportMd(value, fallback = "未填写") {
+  const text = htmlToMarkdownText(value).trim();
+  return text || fallback;
+}
+function exportAssetExt(src, fallback = ".png") {
+  const raw = String(src || "");
+  const dataMatch = raw.match(/^data:([^;,]+)/i);
+  const mime = dataMatch?.[1] || "";
+  if (mime.includes("html")) return ".html";
+  if (mime.includes("jpeg")) return ".jpg";
+  if (mime.includes("png")) return ".png";
+  if (mime.includes("webp")) return ".webp";
+  if (mime.includes("gif")) return ".gif";
+  const pathExt = raw.split("?")[0].match(/\.([a-z0-9]+)$/i)?.[1];
+  return pathExt ? `.${pathExt.toLowerCase()}` : fallback;
+}
+function exportMdCell(value) {
+  return exportMd(value).replace(/\|/g, "\\|").replace(/\n+/g, " / ");
+}
+function collectExportAssets(doc) {
+  const assets = [];
+  const seen = new Map();
+  const add = ({ src, path, role, label, kind }) => {
+    if (!src) return null;
+    if (seen.has(src)) return seen.get(src);
+    const item = { src, path, role, label, kind };
+    seen.set(src, item);
+    assets.push(item);
+    return item;
+  };
+  (doc.nodes || []).forEach((node, index) => {
+    const slug = exportSlugClient(node.name, `page-${index + 1}`);
+    if (node.proto) {
+      const html = isHtmlProto(node);
+      add({
+        src: node.proto,
+        path: html ? `assets/prototypes/${slug}.html` : `assets/images/prototypes/${slug}${exportAssetExt(node.proto)}`,
+        role: html ? "html-prototype" : "image-prototype",
+        kind: html ? "html" : "image",
+        label: `${node.name || `页面 ${index + 1}`}原型`,
+      });
+    }
+    (node.competitors || []).forEach((item, compIndex) => {
+      if (!item.img) return;
+      add({
+        src: item.img,
+        path: `assets/images/references/${slug}-reference-${compIndex + 1}${exportAssetExt(item.img)}`,
+        role: "competitor-reference",
+        kind: "image",
+        label: item.caption || `${node.name || `页面 ${index + 1}`}竞品参考 ${compIndex + 1}`,
+      });
+    });
+  });
+  return assets;
+}
+function buildExportRequirementsMarkdown(doc) {
+  const nodeById = Object.fromEntries((doc.nodes || []).map((node) => [node.id, node]));
+  const assets = collectExportAssets(doc);
+  const assetPath = (src) => assets.find((item) => item.src === src)?.path || "";
+  const lines = [];
+  lines.push(`# ${doc.meta.name || "未命名设计单"}`);
+  lines.push("");
+  lines.push(`创建人：${doc.meta.createdBy || LOCAL_USER_NAME}`);
+  lines.push(`创建时间：${formatDocTime(doc.meta.createdAt || doc.meta.date)}`);
+  lines.push(`最近修改：${formatDocTime(doc.meta.updatedAt || doc.meta.date)}`);
+  lines.push(`所属产品：${doc.meta.product || "ShutEye"}`);
+  lines.push(`设计单状态：${isSubmittedDoc(doc) ? "已完成" : "编写中"}`);
+  lines.push(`页面数量：${doc.nodes.length}`);
+  lines.push("");
+  lines.push("## 一、需求背景");
+  lines.push("");
+  lines.push(exportMd(doc.meta.background));
+  lines.push("");
+  lines.push("## 二、目标");
+  lines.push("");
+  lines.push("### 数据目标");
+  lines.push("");
+  lines.push(exportMd(doc.meta.dataGoals));
+  lines.push("");
+  lines.push("### 体验目标");
+  lines.push("");
+  lines.push(exportMd(doc.meta.expGoals));
+  lines.push("");
+  lines.push("## 三、总流程");
+  lines.push("");
+  if (doc.edges.length) {
+    doc.edges.forEach((edge) => {
+      const from = nodeById[edge.from];
+      const to = nodeById[edge.to];
+      lines.push(`- ${from?.name || "未知页面"} → ${to?.name || "未知页面"}：${exportMd(edge.label, "未命名操作")}`);
+    });
+  } else {
+    lines.push("未填写");
+  }
+  lines.push("");
+  lines.push("## 四、页面明细");
+  lines.push("");
+  if (!doc.nodes.length) lines.push("未填写");
+  doc.nodes.forEach((node, index) => {
+    const baseCells = docTableBaseExtraCells(node.docTableBaseCells);
+    const rows = docTableRows(node.docTableRows, 1);
+    const outgoing = doc.edges.filter((edge) => edge.from === node.id);
+    lines.push(`### ${index + 1}. ${node.name || "未命名页面"}`);
+    lines.push("");
+    lines.push(`节点 ID：\`${node.id}\``);
+    lines.push(`原型文件：${assetPath(node.proto) ? `\`${assetPath(node.proto)}\`` : "未添加"}`);
+    lines.push("");
+    lines.push("#### 页面说明");
+    lines.push("");
+    lines.push(exportMd(node.note));
+    baseCells.note.forEach((cell, cellIndex) => {
+      lines.push("");
+      lines.push(`补充说明 ${cellIndex + 1}：${exportMd(cell)}`);
+    });
+    lines.push("");
+    lines.push("#### 体验目标");
+    lines.push("");
+    lines.push(exportMd(node.expGoal));
+    baseCells.expGoal.forEach((cell, cellIndex) => {
+      lines.push("");
+      lines.push(`补充目标 ${cellIndex + 1}：${exportMd(cell)}`);
+    });
+    if (rows.length) {
+      lines.push("");
+      lines.push("#### 补充记录");
+      lines.push("");
+      rows.forEach((row) => {
+        lines.push(`- ${exportMd(row.label, "自定义项")}`);
+        row.cells.forEach((cell, cellIndex) => lines.push(`  - 内容 ${cellIndex + 1}：${exportMd(cell)}`));
+      });
+    }
+    lines.push("");
+    lines.push("#### 页面跳转");
+    lines.push("");
+    if (outgoing.length) {
+      lines.push("| 触发方式 | 跳转目标 |");
+      lines.push("|---|---|");
+      outgoing.forEach((edge) => {
+        const target = nodeById[edge.to];
+        lines.push(`| ${exportMdCell(edge.label || "未命名操作")} | ${exportMdCell(target?.name || "未知页面")} |`);
+      });
+    } else {
+      lines.push("未填写");
+    }
+    if (node.competitors?.length) {
+      lines.push("");
+      lines.push("#### 竞品参考");
+      lines.push("");
+      node.competitors.forEach((item, refIndex) => {
+        const path = assetPath(item.img);
+        lines.push(`- 参考 ${refIndex + 1}：${exportMd(item.caption)}${path ? `（${path}）` : ""}`);
+      });
+    }
+    lines.push("");
+  });
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+function buildExportPreviewFiles(doc) {
+  const assets = collectExportAssets(doc);
+  const nodeById = Object.fromEntries((doc.nodes || []).map((node) => [node.id, node]));
+  const title = doc.meta.name || "未命名设计单";
+  const product = doc.meta.product || "ShutEye";
+  const now = nowISO();
+  const assetPreview = assets.map((asset) => ({
+    path: asset.path,
+    kind: "asset",
+    title: asset.label || asset.path,
+    asset,
+    content: `${asset.label || asset.path}\n\n类型：${asset.role}\n路径：${asset.path}`,
+  }));
+  const requirements = buildExportRequirementsMarkdown(doc);
+  const manifest = {
+    schema: "prd-canvas-export/1.0",
+    projectId: "当前设计单",
+    title,
+    product,
+    status: isSubmittedDoc(doc) ? "done" : "writing",
+    exportedAt: now,
+    pageCount: doc.nodes.length,
+    nodeCount: doc.nodes.length,
+    edgeCount: doc.edges.length,
+    assetCount: assets.length,
+    assets: assets.map((asset) => ({ path: asset.path, role: asset.role, label: asset.label })),
+  };
+  const readme = `# ${title} 导出包
+
+这是 PRD Canvas 稳定机器导出的需求资源包。
+
+推荐阅读顺序：
+
+1. \`requirements.md\`
+2. \`okf/index.md\`
+3. \`assets/prototypes/\` 和 \`assets/images/\`
+4. \`canvas.json\`
+
+如需重新导入 Canvas，请使用 \`canvas.json\`。评论内容不包含在本导出包内。
+`;
+  const okfIndex = `---
+type: Product Requirement Export
+title: ${title}
+product: ${product}
+timestamp: ${now}
+---
+
+# ${title}
+
+- 项目概览：[project.md](./project.md)
+- 页面明细：${doc.nodes.length ? doc.nodes.map((node, index) => `[${node.name || `页面 ${index + 1}`}](./pages/${exportSlugClient(node.name, `page-${index + 1}`)}.md)`).join("、") : "未填写"}
+- 总流程：[flows/main_flow.md](./flows/main_flow.md)
+- 竞品参考：[references/competitor_refs.md](./references/competitor_refs.md)
+`;
+  const flowMd = doc.edges.length
+    ? ["# 总流程", "", "| 起点 | 触发方式 | 终点 |", "|---|---|---|", ...doc.edges.map((edge) => `| ${nodeById[edge.from]?.name || "未知页面"} | ${exportMdCell(edge.label || "未命名操作")} | ${nodeById[edge.to]?.name || "未知页面"} |`)].join("\n")
+    : "# 总流程\n\n未填写";
+  const pages = doc.nodes.map((node, index) => ({
+    path: `okf/pages/${exportSlugClient(node.name, `page-${index + 1}`)}.md`,
+    kind: "markdown",
+    title: node.name || `页面 ${index + 1}`,
+    content: `---
+type: Product Requirement Page
+id: ${node.id}
+title: ${node.name || "未命名页面"}
+product: ${product}
+prototype: ${assets.find((item) => item.src === node.proto)?.path || ""}
+tags: [page, prototype]
+---
+
+# ${node.name || "未命名页面"}
+
+## 页面说明
+
+${exportMd(node.note)}
+
+## 体验目标
+
+${exportMd(node.expGoal)}
+
+## 页面跳转
+
+${doc.edges.filter((edge) => edge.from === node.id).map((edge) => `- ${exportMd(edge.label, "未命名操作")} → ${nodeById[edge.to]?.name || "未知页面"}`).join("\n") || "未填写"}
+`,
+  }));
+  const groupFiles = (doc.groups || []).map((group, index) => ({
+    path: `okf/groups/${exportSlugClient(group.name, `group-${index + 1}`)}.md`,
+    kind: "markdown",
+    title: group.name || `分组 ${index + 1}`,
+    content: `# ${group.name || `分组 ${index + 1}`}\n\n${(group.nodeIds || []).map((id) => `- ${nodeById[id]?.name || id}`).join("\n") || "未填写"}`,
+  }));
+  return [
+    { path: "README.md", kind: "markdown", title: "README.md", content: readme },
+    { path: "manifest.json", kind: "json", title: "manifest.json", content: JSON.stringify(manifest, null, 2) },
+    { path: "requirements.md", kind: "markdown", title: "requirements.md", content: requirements },
+    { path: "canvas.json", kind: "json", title: "canvas.json", content: JSON.stringify(doc, null, 2) },
+    { path: "okf/index.md", kind: "markdown", title: "okf/index.md", content: okfIndex },
+    { path: "okf/project.md", kind: "markdown", title: "okf/project.md", content: `# ${title}\n\n## 需求背景\n\n${exportMd(doc.meta.background)}\n\n## 数据目标\n\n${exportMd(doc.meta.dataGoals)}\n\n## 体验目标\n\n${exportMd(doc.meta.expGoals)}` },
+    { path: "okf/flows/main_flow.md", kind: "markdown", title: "okf/flows/main_flow.md", content: flowMd },
+    ...pages,
+    ...groupFiles,
+    { path: "okf/references/competitor_refs.md", kind: "markdown", title: "okf/references/competitor_refs.md", content: "# 竞品参考\n\n" + ((doc.nodes || []).flatMap((node, nodeIndex) => (node.competitors || []).map((item, refIndex) => `## ${node.name || `页面 ${nodeIndex + 1}`} · 参考 ${refIndex + 1}\n\n${exportMd(item.caption)}`)).join("\n\n") || "未填写") },
+    { path: "assets/thumbnails/README.md", kind: "markdown", title: "assets/thumbnails/README.md", content: "# thumbnails\n\n缩略图目录保留给后续版本生成，不影响当前资源包使用。" },
+    { path: "export-log.json", kind: "json", title: "export-log.json", content: JSON.stringify({ exportedAt: now, generator: "prd-canvas-exporter/1.0", warnings: [], assetCount: assets.length, missingAssetCount: 0 }, null, 2) },
+    ...assetPreview,
+  ].sort((a, b) => a.path.localeCompare(b.path));
+}
+function fileTreeFromExportFiles(files) {
+  const root = { name: "", path: "", type: "dir", children: [] };
+  files.forEach((file) => {
+    const parts = file.path.split("/");
+    let cursor = root;
+    parts.forEach((part, index) => {
+      const path = parts.slice(0, index + 1).join("/");
+      let child = cursor.children.find((item) => item.name === part);
+      if (!child) {
+        child = { name: part, path, type: index === parts.length - 1 ? "file" : "dir", children: [] };
+        cursor.children.push(child);
+      }
+      cursor = child;
+    });
+  });
+  const sort = (node) => {
+    node.children.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === "dir" ? -1 : 1));
+    node.children.forEach(sort);
+  };
+  sort(root);
+  return root.children;
+}
+function exportHeadings(file) {
+  if (!file?.content || !["markdown", "json"].includes(file.kind)) return [];
+  return String(file.content).split("\n").map((line, index) => {
+    const md = line.match(/^(#{1,4})\s+(.+)/);
+    if (md) return { id: `export-line-${index}`, label: md[2].replace(/`/g, ""), level: md[1].length };
+    if (file.kind === "json" && /"[^"]+":/.test(line) && index < 80) {
+      const label = line.match(/"([^"]+)":/)?.[1];
+      return label ? { id: `export-line-${index}`, label, level: 2 } : null;
+    }
+    return null;
+  }).filter(Boolean).slice(0, 36);
+}
+function ExportViewPane({ doc, apiClient, activeDesign, onToast }) {
+  const files = useMemo(() => buildExportPreviewFiles(doc), [doc]);
+  const tree = useMemo(() => fileTreeFromExportFiles(files), [files]);
+  const [selectedPath, setSelectedPath] = useState("requirements.md");
+  const [downloading, setDownloading] = useState(false);
+  const selected = files.find((file) => file.path === selectedPath) || files[0];
+  const headings = useMemo(() => exportHeadings(selected), [selected]);
+  useEffect(() => {
+    if (!files.some((file) => file.path === selectedPath)) setSelectedPath(files[0]?.path || "");
+  }, [files, selectedPath]);
+  async function downloadPackage() {
+    const id = activeDesign?.id || apiClient?.getCurrentDesignId?.();
+    if (!apiClient?.exportPackage || !id) {
+      onToast?.("当前设计单需要保存到本地服务器后才能下载完整资源包");
+      return;
+    }
+    setDownloading(true);
+    try {
+      const result = await apiClient.exportPackage(id, doc);
+      const url = URL.createObjectURL(result.blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = result.fileName || `${exportSlugClient(doc.meta.name, "prd-canvas-export")}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1200);
+      onToast?.("导出包已开始下载");
+    } catch (error) {
+      onToast?.(error.message || "导出失败");
+    } finally {
+      setDownloading(false);
+    }
+  }
+  const stats = [
+    ["页面", doc.nodes.length],
+    ["连线", doc.edges.length],
+    ["资源", files.filter((file) => file.kind === "asset").length],
+    ["文件", files.length],
+  ];
+  return (
+    <div style={{ position: "absolute", inset: 0, overflow: "hidden", background: C.paper, backgroundImage: `radial-gradient(${C.grid} 1px, transparent 1px)`, backgroundSize: "24px 24px", padding: 20, display: "grid", gridTemplateColumns: "280px minmax(0,1fr) 260px", gap: 18 }}>
+      <aside style={{ minHeight: 0, background: C.glass, border: `1px solid ${C.line}`, borderRadius: 22, boxShadow: C.shadow, display: "flex", flexDirection: "column", overflow: "hidden", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}>
+        <div style={{ padding: "18px 18px 14px", borderBottom: `1px solid ${C.line}` }}>
+          <div style={{ fontSize: 18, fontWeight: 900, color: C.ink }}>导出包结构</div>
+          <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5, color: C.soft }}>机器稳定生成，不包含评论内容。</div>
+        </div>
+        <div className="scl" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 10 }}>
+          <ExportTree nodes={tree} selectedPath={selected?.path} onSelect={setSelectedPath} />
+        </div>
+      </aside>
+      <main style={{ minHeight: 0, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 24, boxShadow: "0 10px 40px -10px rgba(59,130,246,.08), 0 0 20px -5px rgba(0,0,0,.03)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+        <div style={{ flexShrink: 0, padding: "16px 20px", borderBottom: `1px solid ${C.line}`, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, background: "rgba(248,250,252,.72)" }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 12, color: C.faint, fontFamily: mono, fontWeight: 800, letterSpacing: ".08em" }}>FILE PREVIEW</div>
+            <div style={{ marginTop: 4, fontSize: 18, lineHeight: 1.25, fontWeight: 900, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selected?.path || "未选择文件"}</div>
+          </div>
+          <button type="button" onClick={downloadPackage} disabled={downloading} style={{ height: 38, border: "none", borderRadius: 999, padding: "0 16px", background: downloading ? "#93C5FD" : C.indigo, color: "#fff", fontFamily: sans, fontSize: 13, fontWeight: 900, cursor: downloading ? "default" : "pointer", boxShadow: "0 10px 22px rgba(37,99,235,.2)", whiteSpace: "nowrap" }}>{downloading ? "正在打包..." : "下载项目包"}</button>
+        </div>
+        <div className="scl" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 24 }}>
+          <ExportFilePreview file={selected} />
+        </div>
+      </main>
+      <aside className="doc-toc-panel" style={{ minHeight: 0, display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ background: C.glass, border: `1px solid ${C.line}`, borderRadius: 20, boxShadow: C.shadow, padding: 16 }}>
+          <div style={{ fontFamily: mono, fontSize: 10, color: C.faint, letterSpacing: ".14em", fontWeight: 900 }}>EXPORT INDEX</div>
+          <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            {stats.map(([label, value]) => (
+              <div key={label} style={{ border: `1px solid ${C.lineSoft}`, borderRadius: 12, padding: "9px 10px", background: "rgba(248,250,252,.74)" }}>
+                <div style={{ color: C.faint, fontSize: 11, fontWeight: 800 }}>{label}</div>
+                <div style={{ marginTop: 3, color: C.ink, fontSize: 18, fontWeight: 900 }}>{value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div style={{ flex: 1, minHeight: 0, background: C.glass, border: `1px solid ${C.line}`, borderRadius: 20, boxShadow: C.shadow, padding: 16, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+          <div style={{ fontFamily: mono, fontSize: 10, color: C.faint, letterSpacing: ".14em", fontWeight: 900, marginBottom: 12 }}>ON THIS FILE</div>
+          <div className="scl" style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "grid", alignContent: "start", gap: 4 }}>
+            {headings.length ? headings.map((item) => (
+              <button key={item.id} type="button" onClick={() => document.getElementById(item.id)?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                style={{ border: "none", background: "transparent", borderRadius: 8, padding: `6px 7px 6px ${Math.min(22, 7 + (item.level - 1) * 10)}px`, color: C.soft, fontFamily: sans, fontSize: 12, fontWeight: 800, textAlign: "left", cursor: "pointer" }}>{item.label}</button>
+            )) : <div style={{ color: C.faint, fontSize: 12, lineHeight: 1.6 }}>当前文件没有可索引标题。</div>}
+          </div>
+        </div>
+      </aside>
+    </div>
+  );
+}
+function ExportTree({ nodes, selectedPath, onSelect, depth = 0 }) {
+  return (
+    <div style={{ display: "grid", gap: 2 }}>
+      {nodes.map((node) => (
+        <div key={node.path}>
+          <button type="button" disabled={node.type !== "file"} onClick={() => node.type === "file" && onSelect(node.path)}
+            style={{ width: "100%", minHeight: 30, border: "none", borderRadius: 10, padding: `0 8px 0 ${8 + depth * 12}px`, background: selectedPath === node.path ? C.indigoSoft : "transparent", color: selectedPath === node.path ? C.indigo : node.type === "dir" ? C.ink : C.soft, fontFamily: sans, fontSize: 12.5, fontWeight: node.type === "dir" ? 900 : 760, display: "flex", alignItems: "center", gap: 7, textAlign: "left", cursor: node.type === "file" ? "pointer" : "default" }}>
+            <span style={{ width: 18, height: 18, borderRadius: 6, background: node.type === "dir" ? "#E0F2FE" : "#F1F5F9", color: node.type === "dir" ? "#0284C7" : C.soft, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, flexShrink: 0 }}>{node.type === "dir" ? "⌁" : "·"}</span>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
+          </button>
+          {node.children?.length ? <ExportTree nodes={node.children} selectedPath={selectedPath} onSelect={onSelect} depth={depth + 1} /> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+function ExportFilePreview({ file }) {
+  if (!file) return null;
+  if (file.kind === "asset") {
+    const asset = file.asset || {};
+    const isHtml = asset.kind === "html";
+    return (
+      <div style={{ maxWidth: 860, margin: "0 auto" }}>
+        <div style={{ marginBottom: 16, color: C.soft, fontSize: 13, lineHeight: 1.7 }}>
+          <div><strong style={{ color: C.ink }}>资源说明：</strong>{asset.label || file.path}</div>
+          <div><strong style={{ color: C.ink }}>导出路径：</strong><code>{file.path}</code></div>
+        </div>
+        {isHtml ? (
+          <div style={{ width: 280, borderRadius: 18, overflow: "hidden", border: `1px solid ${C.line}`, background: "#fff", boxShadow: "0 16px 40px rgba(15,23,42,.1)" }}>
+            <HtmlPrototypeFrame src={asset.src} title={asset.label || "HTML 原型预览"} ratio={HTML_PROTO_DEFAULT_RATIO} />
+          </div>
+        ) : (
+          <img src={asset.src} alt={asset.label || ""} style={{ maxWidth: "100%", maxHeight: 560, borderRadius: 18, border: `1px solid ${C.line}`, boxShadow: "0 16px 40px rgba(15,23,42,.1)", objectFit: "contain" }} />
+        )}
+      </div>
+    );
+  }
+  const lines = String(file.content || "").split("\n");
+  return (
+    <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: file.kind === "json" ? mono : sans, fontSize: file.kind === "json" ? 12 : 14, lineHeight: file.kind === "json" ? 1.75 : 1.85, color: C.ink }}>
+      {lines.map((line, index) => {
+        const heading = line.match(/^(#{1,4})\s+(.+)/);
+        const id = heading || (file.kind === "json" && /"[^"]+":/.test(line) && index < 80) ? `export-line-${index}` : undefined;
+        return <span key={index} id={id} style={heading ? { display: "block", marginTop: index ? 18 : 0, fontSize: Math.max(15, 24 - heading[1].length * 2), fontWeight: 900, fontFamily: sans } : undefined}>{line || " "}{index < lines.length - 1 ? "\n" : ""}</span>;
+      })}
+    </pre>
   );
 }
 

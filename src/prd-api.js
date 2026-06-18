@@ -85,6 +85,33 @@ export function createPrdApi() {
     async exportMarkdown(id, markdown) {
       return request(`/api/designs/${encodeURIComponent(id)}/export-md`, { method: "POST", body: { markdown } });
     },
+    async exportPackage(id = currentDesignId, doc) {
+      if (!id) throw new Error("缺少设计单 ID");
+      const response = await fetch(`/api/designs/${encodeURIComponent(id)}/export-package`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doc }),
+        credentials: "include",
+      });
+      if (!response.ok) {
+        let message = `导出失败 ${response.status}`;
+        try {
+          const data = await response.json();
+          message = data?.error || message;
+        } catch {}
+        const error = new Error(message);
+        error.status = response.status;
+        throw error;
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const encoded = disposition.match(/filename=\"?([^\";]+)\"?/i)?.[1] || "";
+      let fileName = "prd-canvas-export.zip";
+      if (encoded) {
+        try { fileName = decodeURIComponent(encoded); } catch { fileName = encoded; }
+      }
+      return { blob, fileName };
+    },
   };
 }
 

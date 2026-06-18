@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import PRDCanvas from "../prd-canvas (2).jsx";
+import CanvasLogoMark from "./canvas-logo.jsx";
 import { createPrdApi, installLocalStorageBridge, installStorageBridge } from "./prd-api.js";
 
 const authFont = "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
@@ -34,7 +35,7 @@ function AuthScreen({ api, onAuthed }) {
     <div style={{ minHeight: "100vh", background: "#F1F5F9", backgroundImage: "radial-gradient(rgba(59,130,246,.18) 1px, transparent 1px)", backgroundSize: "24px 24px", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, color: "#0F172A", fontFamily: authFont }}>
       <form onSubmit={submit} style={{ width: 420, maxWidth: "100%", borderRadius: 24, background: "rgba(255,255,255,.86)", border: "1px solid #DCE6F2", boxShadow: "0 24px 80px rgba(15,23,42,.12)", padding: 28, backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
-          <span style={{ width: 34, height: 34, borderRadius: 10, background: "#EFF6FF", color: "#3B82F6", border: "1px solid #BFDBFE", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 900 }}>PR</span>
+          <CanvasLogoMark size={34} color="#3B82F6" />
           <div>
             <h1 style={{ margin: 0, fontSize: 22, lineHeight: 1.15, fontWeight: 950 }}>需求画布</h1>
             <p style={{ margin: "5px 0 0", color: "#64748B", fontSize: 13, lineHeight: 1.5 }}>创建账号后即可新建设计单，同事登录后可公开浏览。</p>
