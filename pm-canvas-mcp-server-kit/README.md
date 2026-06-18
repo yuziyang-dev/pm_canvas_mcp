@@ -90,9 +90,9 @@ npm run healthcheck
 
 这些目录是运行态数据，不要提交到 Git，也不要当作安装包的一部分长期分发。
 
-## 连接已有 PRD Canvas 网页服务
+## 连接已有 Canvas PRD 网页服务
 
-如果要让 MCP 生成的数据直接出现在某个已有 PRD Canvas 网页服务里，请修改 MCP 配置里的环境变量：
+如果要让 MCP 生成的数据直接出现在某个已有 Canvas PRD 网页服务里，请修改 MCP 配置里的环境变量：
 
 ```json
 {

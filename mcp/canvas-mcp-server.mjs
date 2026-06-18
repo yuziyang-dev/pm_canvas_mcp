@@ -752,7 +752,7 @@ server.registerResource(
   "prd_canvas_projects",
   "canvas://projects",
   {
-    title: "PRD Canvas Projects",
+    title: "Canvas PRD Projects",
     description: "当前数据库中的设计单列表。",
     mimeType: "application/json",
   },
@@ -777,7 +777,7 @@ server.registerResource(
     }),
   }),
   {
-    title: "PRD Canvas Project",
+    title: "Canvas PRD Project",
     description: "读取单个设计单的完整 Canvas JSON。",
     mimeType: "application/json",
   },
@@ -792,8 +792,8 @@ server.registerResource(
 registerTool(
   "prd_canvas_list_users",
   {
-    title: "List PRD Canvas Users",
-    description: "列出本地 PRD Canvas 中已有账号。用于选择 owner_username，让 MCP 生成的设计单归属到正确 PM 账号。",
+    title: "List Canvas PRD Users",
+    description: "列出本地 Canvas PRD 中已有账号。用于选择 owner_username，让 MCP 生成的设计单归属到正确 PM 账号。",
     inputSchema: {
       response_format: ResponseFormat,
     },
@@ -801,7 +801,7 @@ registerTool(
   },
   async ({ response_format }) => {
     const users = stmt.listUsers.all().map(publicUser);
-    const markdown = ["# PRD Canvas 账号", "", ...users.map((user) => `- ${user.displayName} (${user.username}) · ${user.id}`)].join("\n");
+    const markdown = ["# Canvas PRD 账号", "", ...users.map((user) => `- ${user.displayName} (${user.username}) · ${user.id}`)].join("\n");
     return asToolResult({ users }, response_format, markdown);
   },
 );
@@ -809,7 +809,7 @@ registerTool(
 registerTool(
   "prd_canvas_list_projects",
   {
-    title: "List PRD Canvas Projects",
+    title: "List Canvas PRD Projects",
     description: "分页列出设计单，可按创建者、产品和状态过滤。不会修改任何数据。",
     inputSchema: {
       scope: z.enum(["all", "mine"]).default("all").describe("all=全部公开设计单；mine=owner_username 对应账号的设计单。"),
@@ -846,7 +846,7 @@ registerTool(
 registerTool(
   "prd_canvas_create_project",
   {
-    title: "Create PRD Canvas Project",
+    title: "Create Canvas PRD Project",
     description: "创建一个空的需求设计单项目，后续可继续导入聊天内容、HTML 原型、页面节点、跳转线和分组。",
     inputSchema: {
       title: z.string().min(1).max(120).describe("设计单标题。"),
@@ -880,7 +880,7 @@ registerTool(
 registerTool(
   "prd_canvas_get_project",
   {
-    title: "Get PRD Canvas Project",
+    title: "Get Canvas PRD Project",
     description: "读取某个设计单的完整 Canvas JSON，可选同时返回面向 AI/vibe coding 的 Markdown。",
     inputSchema: {
       project_id: z.string().min(1).describe("设计单 ID。"),
@@ -1083,7 +1083,7 @@ registerTool(
   "prd_canvas_generate_canvas_from_context",
   {
     title: "Generate Canvas From Context",
-    description: "从聊天内容、关键决策、HTML 原型和可选的结构化页面/跳转/分组生成完整 PRD Canvas 设计单。该工具会创建新设计单并写入数据库与 NAS。",
+    description: "从聊天内容、关键决策、HTML 原型和可选的结构化页面/跳转/分组生成完整 Canvas PRD 设计单。该工具会创建新设计单并写入数据库与 NAS。",
     inputSchema: {
       title: z.string().min(1).max(120),
       product: Product,
@@ -1221,7 +1221,7 @@ registerTool(
 registerTool(
   "prd_canvas_validate_project",
   {
-    title: "Validate PRD Canvas Project",
+    title: "Validate Canvas PRD Project",
     description: "校验设计单是否具备可交付给 vibe coding 的基本信息：背景、目标、页面、原型、跳转和页面说明。",
     inputSchema: {
       project_id: z.string().min(1),
@@ -1293,7 +1293,7 @@ registerTool(
 registerTool(
   "prd_canvas_upload_asset",
   {
-    title: "Upload PRD Canvas Asset",
+    title: "Upload Canvas PRD Asset",
     description: "上传图片、HTML、Markdown 或 JSON 资源到 NAS，并登记到 files 表。用于给页面节点、竞品参考或导出包准备资源 URL。",
     inputSchema: {
       project_id: z.string().optional().describe("关联的设计单 ID。"),
@@ -1343,8 +1343,8 @@ registerTool(
 server.registerPrompt(
   "prd_canvas_generate_from_chat",
   {
-    title: "Generate PRD Canvas From Chat",
-    description: "指导客户端模型从聊天记录和 HTML 原型生成可落地的 PRD Canvas 项目。",
+    title: "Generate Canvas PRD From Chat",
+    description: "指导客户端模型从聊天记录和 HTML 原型生成可落地的 Canvas PRD 项目。",
     argsSchema: {
       project_title: z.string().describe("需求/设计单标题。"),
       product: Product,
@@ -1356,7 +1356,7 @@ server.registerPrompt(
       content: {
         type: "text",
         text: [
-          `请把当前聊天内容整理为「${project_title}」的 PRD Canvas 项目，所属产品为 ${product}。`,
+          `请把当前聊天内容整理为「${project_title}」的 Canvas PRD 项目，所属产品为 ${product}。`,
           "先抽取：需求背景、数据目标、体验目标、关键决策、页面列表、页面跳转、业务分组。",
           "如果聊天中包含 HTML 原型源码，请用 prd_canvas_generate_canvas_from_context 的 html_prototypes 传入；如果只有页面信息，先生成节点和跳转。",
           "生成后调用 prd_canvas_validate_project 检查缺失项，再调用 prd_canvas_generate_markdown 生成面向 vibe coding 的 PRD Markdown。",
@@ -1368,11 +1368,11 @@ server.registerPrompt(
 
 async function main() {
   if (!existsSync(dbPath)) {
-    console.error(`PRD Canvas MCP: database will be created at ${dbPath}`);
+    console.error(`Canvas PRD MCP: database will be created at ${dbPath}`);
   }
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`PRD Canvas MCP server running via stdio`);
+  console.error(`Canvas PRD MCP server running via stdio`);
   console.error(`DB: ${dbPath}`);
   console.error(`Storage: ${storageRoot}`);
 }

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import PRDCanvas from "../prd-canvas (2).jsx";
 import CanvasLogoMark from "./canvas-logo.jsx";
+import CanvasWordmark from "./canvas-wordmark.jsx";
 import { createPrdApi, installLocalStorageBridge, installStorageBridge } from "./prd-api.js";
 
 const authFont = "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
@@ -37,7 +38,7 @@ function AuthScreen({ api, onAuthed }) {
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
           <CanvasLogoMark size={34} color="#3B82F6" />
           <div>
-            <h1 style={{ margin: 0, fontSize: 22, lineHeight: 1.15, fontWeight: 950 }}>需求画布</h1>
+            <CanvasWordmark width={82} height={32} />
             <p style={{ margin: "5px 0 0", color: "#64748B", fontSize: 13, lineHeight: 1.5 }}>创建账号后即可新建设计单，同事登录后可公开浏览。</p>
           </div>
         </div>

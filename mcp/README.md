@@ -1,6 +1,6 @@
-# PRD Canvas MCP Server
+# Canvas PRD MCP Server
 
-这个 MCP server 让 Cursor、Claude Desktop、Codex 等 MCP 客户端可以把聊天内容、HTML 原型和产品关键决策写入当前 PRD Canvas 数据库，生成可在网页工作台中打开的设计单。
+这个 MCP server 让 Cursor、Claude Desktop、Codex 等 MCP 客户端可以把聊天内容、HTML 原型和产品关键决策写入当前 Canvas PRD 数据库，生成可在网页工作台中打开的设计单。
 
 ## 启动方式
 

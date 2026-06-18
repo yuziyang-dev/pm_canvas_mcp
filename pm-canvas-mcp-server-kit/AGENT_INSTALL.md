@@ -1,10 +1,10 @@
 # Agent Install Guide
 
-You are installing the PRD Canvas MCP Server for a user.
+You are installing the Canvas PRD MCP Server for a user.
 
 ## Goal
 
-Make the `prd-canvas` MCP server available in the user's MCP client so the client can create PRD Canvas projects from chat context, HTML prototypes, page nodes, transitions, groups, and Markdown exports.
+Make the `prd-canvas` MCP server available in the user's MCP client so the client can create Canvas PRD projects from chat context, HTML prototypes, page nodes, transitions, groups, and Markdown exports.
 
 ## Steps
 
@@ -35,7 +35,7 @@ Make the `prd-canvas` MCP server available in the user's MCP client so the clien
 
 - Do not send secrets or tokens through chat.
 - Do not commit `data/`, `storage/`, `generated/`, or `node_modules/`.
-- If the user wants this MCP server to write into an existing PRD Canvas web app, set these env values in the MCP config:
+- If the user wants this MCP server to write into an existing Canvas PRD web app, set these env values in the MCP config:
 
   - `DATABASE_PATH`
   - `STORAGE_ROOT`
@@ -47,5 +47,5 @@ Make the `prd-canvas` MCP server available in the user's MCP client so the clien
 After configuration, ask the MCP client:
 
 ```text
-请列出 PRD Canvas MCP 工具，然后创建一个测试设计单，包含两个页面节点、一条跳转线，并生成 Markdown。
+请列出 Canvas PRD MCP 工具，然后创建一个测试设计单，包含两个页面节点、一条跳转线，并生成 Markdown。
 ```

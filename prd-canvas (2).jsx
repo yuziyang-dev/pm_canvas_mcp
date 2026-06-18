@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import Fuse from "fuse.js";
 import { pinyin } from "pinyin-pro";
 import CanvasLogoMark from "./src/canvas-logo.jsx";
+import CanvasWordmark from "./src/canvas-wordmark.jsx";
 
 /* ============ 令牌:浅色玻璃画布工具 ============ */
 const C = {
@@ -579,9 +580,10 @@ function toAI(doc) {
 }
 
 /* ============ 通用件 ============ */
-function Btn({ children, onClick, disabled, kind = "primary", small }) {
-  const st = { fontFamily: sans, cursor: disabled ? "not-allowed" : "pointer", border: "none", borderRadius: 999, fontWeight: 600, padding: small ? "7px 13px" : "9px 17px", fontSize: small ? 12 : 13, boxShadow: kind === "primary" ? "0 1px 3px rgba(37,99,235,.22)" : "none", transition: "background .16s, color .16s, border-color .16s, box-shadow .16s" };
-  const v = { primary: { background: disabled ? C.faint : C.indigo, color: "#fff" }, ghost: { background: "rgba(255,255,255,.72)", color: C.soft, border: `1px solid ${C.line}` }, copper: { background: C.copper, color: "#fff" } };
+function Btn({ children, onClick, disabled, kind = "primary", small, topBar }) {
+  const disabledTopPrimary = topBar && disabled && kind === "primary";
+  const st = { fontFamily: sans, cursor: disabled ? "not-allowed" : "pointer", border: "none", borderRadius: 999, fontWeight: 600, height: topBar ? 40 : undefined, display: "inline-flex", alignItems: "center", justifyContent: "center", padding: topBar ? "0 18px" : small ? "7px 13px" : "9px 17px", fontSize: small ? 12 : 13, lineHeight: topBar ? 1 : undefined, boxShadow: kind === "primary" && !disabledTopPrimary ? "0 1px 3px rgba(37,99,235,.22)" : "none", transition: "background .16s, color .16s, border-color .16s, box-shadow .16s" };
+  const v = { primary: { background: disabledTopPrimary ? "#8FA0B8" : disabled ? C.faint : C.indigo, color: "#fff" }, ghost: { background: "rgba(255,255,255,.72)", color: C.soft, border: `1px solid ${C.line}` }, copper: { background: C.copper, color: "#fff" } };
   return <button onClick={onClick} disabled={disabled} style={{ ...st, ...v[kind] }}>{children}</button>;
 }
 const fieldStyle = { width: "100%", borderRadius: 10, padding: "9px 11px", fontSize: 13.5, border: `1px solid ${C.line}`, background: C.surface, color: C.ink, fontFamily: sans, outline: "none", boxShadow: "0 1px 2px rgba(15,23,42,.02)" };
@@ -944,7 +946,7 @@ function ManagerSidebar({ active = "设计单", currentUser = null, onLogout = n
       <div style={{ padding: "10px 10px 12px", display: "flex", alignItems: "center", marginBottom: 4 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 850, fontSize: 14, minWidth: 0 }}>
           <CanvasLogoMark size={30} color={C.indigo} />
-          需求画布
+          <CanvasWordmark width={72} height={28} />
         </div>
       </div>
       <div className="manager-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 0 14px", display: "flex", flexDirection: "column", gap: 4 }}>
@@ -1269,7 +1271,7 @@ function RequirementManager({ doc, onOpenCanvas, onCreate, onDelete, serverCards
             <h1 style={{ margin: 0, fontSize: 28, lineHeight: 1.12, fontWeight: 900, letterSpacing: 0, color: "#111827" }}>设计单管理</h1>
             <p style={{ margin: "8px 0 0", color: C.soft, fontSize: 14, lineHeight: 1.55 }}>集中管理设计单,按状态和最近编辑快速查找,当前 {writingCount} 个编写中、{doneCount} 个已完成。</p>
           </div>
-          <button type="button" className="manager-primary-btn" onClick={onCreate} style={{ height: 38, border: "none", borderRadius: 10, padding: "0 16px", background: C.indigo, color: "#fff", display: "inline-flex", alignItems: "center", gap: 8, fontFamily: sans, fontSize: 13, fontWeight: 850, cursor: "pointer", boxShadow: "0 8px 18px rgba(37,99,235,.18)", transition: "background .16s,transform .16s", flexShrink: 0 }}>
+          <button type="button" className="manager-primary-btn" onClick={onCreate} style={{ height: 40, border: "none", borderRadius: 999, padding: "0 18px", background: C.indigo, color: "#fff", display: "inline-flex", alignItems: "center", gap: 8, fontFamily: sans, fontSize: 13, fontWeight: 850, cursor: "pointer", boxShadow: "0 8px 18px rgba(37,99,235,.18)", transition: "background .16s,transform .16s", flexShrink: 0 }}>
             <ManagerIcon name="plus" size={16} />
             新建设计单
           </button>
@@ -1480,7 +1482,7 @@ function RequirementDetail({ card, onBack, onOpenCanvas, onCreate, currentUser =
             <p style={{ margin: "8px 0 0", color: C.soft, fontSize: 14, lineHeight: 1.55, maxWidth: 760 }}>{card?.description || "从这里串起需求讨论、分析、Canvas 设计单、PRD、开发、测试和上线。"}</p>
           </div>
           <div className="requirement-top-actions" style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-            <button type="button" className="manager-primary-btn" onClick={onCreate} style={{ height: 38, border: "none", borderRadius: 10, padding: "0 16px", background: C.indigo, color: "#fff", display: "inline-flex", alignItems: "center", gap: 8, fontFamily: sans, fontSize: 13, fontWeight: 850, cursor: "pointer", boxShadow: "0 8px 18px rgba(37,99,235,.18)", transition: "background .16s,transform .16s" }}>
+            <button type="button" className="manager-primary-btn" onClick={onCreate} style={{ height: 40, border: "none", borderRadius: 999, padding: "0 18px", background: C.indigo, color: "#fff", display: "inline-flex", alignItems: "center", gap: 8, fontFamily: sans, fontSize: 13, fontWeight: 850, cursor: "pointer", boxShadow: "0 8px 18px rgba(37,99,235,.18)", transition: "background .16s,transform .16s" }}>
               <ManagerIcon name="plus" size={16} />
               新建需求
             </button>
@@ -1750,7 +1752,7 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
   const confirmReplaceCurrentDoc = useCallback((message) => {
     const current = docRef.current;
     if (!docHasContent(current)) return true;
-    return window.confirm(message || "这会替换当前本地打开的需求画布,继续吗?");
+    return window.confirm(message || "这会替换当前本地打开的 Canvas PRD,继续吗?");
   }, []);
 
   const createBlankRequirement = useCallback(async () => {
@@ -1970,19 +1972,26 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
         @keyframes nodeDetailSlideIn{from{transform:translateX(100%)}to{transform:translateX(0)}}`}</style>
 
       <header style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)", alignItems: "center", gap: 16, padding: "14px 18px 10px", background: C.canvas, zIndex: 30, flexShrink: 0 }}>
-        <div style={{ justifySelf: "start", width: "fit-content", maxWidth: "100%", display: "flex", alignItems: "center", gap: 8, minWidth: 0, background: C.glass, border: `1px solid ${C.line}`, borderRadius: 999, padding: "6px 10px", boxShadow: C.shadow, backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}>
+        <div style={{ justifySelf: "start", width: "fit-content", maxWidth: "100%", height: 40, display: "flex", alignItems: "center", gap: 8, minWidth: 0, background: C.glass, border: `1px solid ${C.line}`, borderRadius: 999, padding: "0 17px 0 10px", boxShadow: C.shadow, backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}>
           {!standaloneCanvas && (
 	            <button type="button" title="返回需求管理" aria-label="返回需求管理" onClick={returnToManager} style={{ width: 26, height: 26, borderRadius: 999, border: "none", background: C.indigoSoft, color: C.indigo, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
               <ManagerIcon name="back" size={15} />
             </button>
           )}
-          <CanvasLogoMark size={22} color={C.indigo} />
-          <span style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 260 }}>{doc.meta.name || "需求画布"}</span>
-          <span style={{ color: C.line }}> / </span>
-          <button type="button" disabled={readOnly} title={readOnly ? "已完成设计单处于阅读状态" : "需求信息"} onClick={() => { if (!readOnly) setSetup(true); }}
-            style={{ border: "none", background: "transparent", color: readOnly ? C.faint : C.soft, fontSize: 12.5, fontWeight: 600, cursor: readOnly ? "default" : "pointer", padding: "4px 7px", borderRadius: 8 }}>需求信息</button>
+          {doc.meta.name ? (
+            <span style={{ fontFamily: sans, fontWeight: 700, fontSize: 13, lineHeight: "18px", color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 260 }}>{doc.meta.name}</span>
+          ) : (
+            <span style={{ fontFamily: sans, fontWeight: 700, fontSize: 13, lineHeight: "18px", color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 260 }}>Canvas PRD</span>
+          )}
+          {!readOnly && (
+            <>
+              <span style={{ color: C.line }}> / </span>
+              <button type="button" title="需求信息" onClick={() => setSetup(true)}
+                style={{ border: "none", background: "transparent", color: C.soft, fontSize: 12.5, fontWeight: 600, cursor: "pointer", padding: "4px 7px", borderRadius: 8 }}>需求信息</button>
+            </>
+          )}
         </div>
-        <div style={{ justifySelf: "center", display: "flex", alignItems: "center", gap: 6, border: `1px solid ${C.line}`, borderRadius: 999, padding: "6px 8px", background: C.glass, boxShadow: C.shadow, backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}>
+        <div style={{ justifySelf: "center", height: 40, display: "flex", alignItems: "center", gap: 6, border: `1px solid ${C.line}`, borderRadius: 999, padding: "0 8px", background: C.glass, boxShadow: C.shadow, backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}>
           {[["canvas", "画布视图"], ["doc", "文档视图"], ["export", "导出视图"]].map(([k, l]) => (
             <button key={k} onClick={() => setMode(k)} style={{ border: "none", height: 30, padding: "0 15px", borderRadius: 999, fontSize: 12.5, cursor: "pointer", fontFamily: sans, fontWeight: 700, background: mode === k ? C.indigoSoft : "transparent", color: mode === k ? C.indigo : C.soft, boxShadow: "none", transition: "background .18s, color .18s" }}>{l}</button>
           ))}
@@ -2833,8 +2842,19 @@ function Canvas({ doc, update, updateSilent, pushHistory, sel, setSel, openDetai
               </div>
               {descLines.length > 0 && (
                 <div style={{ height: nodeDescH(n), boxSizing: "border-box", padding: `${NODE_DESC_PAD_TOP}px 10px ${NODE_DESC_PAD_BOTTOM}px` }}>
-                  <div style={{ fontSize: 10.5, color: C.soft, lineHeight: `${NODE_DESC_LINE_H}px`, overflow: "hidden" }}>
-                    {descLines.map((line, j) => <span key={j} style={{ display: "block", height: NODE_DESC_LINE_H, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{line}</span>)}
+                  <div style={{
+                    fontSize: 10.5,
+                    color: C.soft,
+                    lineHeight: `${NODE_DESC_LINE_H}px`,
+                    maxHeight: descLines.length * NODE_DESC_LINE_H,
+                    overflow: "hidden",
+                    display: "-webkit-box",
+                    WebkitBoxOrient: "vertical",
+                    WebkitLineClamp: descLines.length,
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-word",
+                  }}>
+                    {nodeDescText(n)}
                   </div>
                 </div>
               )}
@@ -6492,7 +6512,7 @@ function buildExportPreviewFiles(doc) {
   };
   const readme = `# ${title} 导出包
 
-这是 PRD Canvas 稳定机器导出的需求资源包。
+这是 Canvas PRD 稳定机器导出的需求资源包。
 
 推荐阅读顺序：
 
@@ -6777,15 +6797,15 @@ function SubmitBtn({ doc, update, onSubmitted, onRequestEdit, canEdit = true }) 
   if (done) {
     return (
       <div data-submitted-actions="1" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        {canEdit && <Btn kind="ghost" onClick={onRequestEdit}>编辑</Btn>}
-        <Btn disabled>已完成</Btn>
+        {canEdit && <Btn topBar kind="ghost" onClick={onRequestEdit}>编辑</Btn>}
+        <Btn topBar disabled>已完成</Btn>
       </div>
     );
   }
-  if (!canEdit) return <Btn disabled>只读</Btn>;
+  if (!canEdit) return <Btn topBar disabled>只读</Btn>;
   return (
     <>
-      <Btn onClick={() => setOpen(true)}>提交</Btn>
+      <Btn topBar onClick={() => setOpen(true)}>提交</Btn>
       {open && (
         <div data-submit-checklist-modal="1" onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.34)", zIndex: 70, display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ background: C.glass, border: `1px solid ${C.line}`, borderRadius: 20, padding: 24, width: "100%", maxWidth: 760, maxHeight: "calc(100vh - 56px)", overflowY: "auto", boxShadow: "0 22px 70px rgba(15,23,42,.18)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)" }}>

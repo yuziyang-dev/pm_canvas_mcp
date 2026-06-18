@@ -746,7 +746,7 @@ function buildExportPackage(row, doc, user) {
 
   const readme = `# ${title} 导出包
 
-这是 PRD Canvas 稳定机器导出的需求资源包。
+这是 Canvas PRD 稳定机器导出的需求资源包。
 
 推荐阅读顺序：
 
@@ -1265,7 +1265,7 @@ async function main() {
   });
 
   server.listen(port, host, () => {
-    console.log(`PRD Canvas local server`);
+    console.log(`Canvas PRD local server`);
     console.log(`  Local:   http://localhost:${port}/canvas.html`);
     console.log(`  Network: http://10.88.4.197:${port}/canvas.html`);
     console.log(`  DB:      ${dbPath}`);
