@@ -62,6 +62,20 @@ export function createPrdApi() {
       if (!id) return null;
       return request(`/api/designs/${encodeURIComponent(id)}`, { method: "PUT", body: { doc } });
     },
+    async deleteDesign(id) {
+      if (!id) return null;
+      const result = await request(`/api/designs/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (currentDesignId === id) currentDesignId = null;
+      return result;
+    },
+    async listComments(id = currentDesignId) {
+      if (!id) return { comments: [] };
+      return request(`/api/designs/${encodeURIComponent(id)}/comments`);
+    },
+    async createComment(id = currentDesignId, payload) {
+      if (!id) return null;
+      return request(`/api/designs/${encodeURIComponent(id)}/comments`, { method: "POST", body: payload });
+    },
     async uploadFile(payload) {
       return request("/api/files", {
         method: "POST",

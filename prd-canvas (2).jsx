@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
+import Fuse from "fuse.js";
+import { pinyin } from "pinyin-pro";
 
 /* ============ 令牌:浅色玻璃画布工具 ============ */
 const C = {
@@ -654,6 +656,32 @@ function docWordCount(doc) {
   ].map(htmlToText).join(" ");
   return text.split(/\s+/).filter(Boolean).length;
 }
+function compactSearchText(values) {
+  return values.flat(Infinity).map(htmlToText).map((v) => String(v || "").trim()).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+}
+function docSearchText(doc) {
+  const nodes = Array.isArray(doc?.nodes) ? doc.nodes : [];
+  const nodeById = Object.fromEntries(nodes.map((n) => [n.id, n]).filter(([id]) => id));
+  return compactSearchText([
+    doc?.meta?.name,
+    doc?.meta?.product,
+    doc?.meta?.background,
+    doc?.meta?.dataGoals,
+    doc?.meta?.expGoals,
+    doc?.meta?.analysisUrl,
+    ...(Array.isArray(doc?.groups) ? doc.groups.map((g) => g?.name) : []),
+    ...nodes.flatMap((n) => [
+      n?.name,
+      n?.note,
+      n?.expGoal,
+      n?.protoName,
+      n?.docTableBaseCells ? Object.values(n.docTableBaseCells).flat() : [],
+      Array.isArray(n?.docTableRows) ? n.docTableRows.flatMap((row) => [row?.label, ...(Array.isArray(row?.cells) ? row.cells : [])]) : [],
+      Array.isArray(n?.competitors) ? n.competitors.map((c) => c?.caption) : [],
+    ]),
+    ...(Array.isArray(doc?.edges) ? doc.edges.flatMap((e) => [e?.label, nodeById[e?.from]?.name, nodeById[e?.to]?.name]) : []),
+  ]).slice(0, 24000);
+}
 function isSubmittedDoc(doc) {
   return doc?.meta?.requirementStatus === "done" && !!doc?.meta?.submittedAt;
 }
@@ -679,11 +707,13 @@ function currentRequirementCard(doc) {
     submittedAt: doc?.meta?.submittedAt || "",
     icon: "canvas",
     owners: ["你"],
+    ownerName: doc?.meta?.createdBy || "你",
     updated: doc?.meta?.date || todayISO(),
     updatedAt: doc?.meta?.updatedAt || doc?.meta?.date || nowISO(),
     timeBucket: "今天",
     pageCount: (doc?.nodes || []).length,
     wordCount: docWordCount(doc),
+    searchText: docSearchText(doc),
     primaryAction: "继续编辑",
   };
 }
@@ -701,7 +731,7 @@ function dateBucketFromISO(value) {
 function designSummaryToCard(design) {
   const product = getProductMeta(design?.product);
   const statusTone = design?.status === "done" && design?.submittedAt ? "done" : "writing";
-  const ownerName = design?.ownerName || "同事";
+  const ownerName = design?.ownerName || "未设置";
   return {
     id: design.id,
     kind: "server",
@@ -716,7 +746,7 @@ function designSummaryToCard(design) {
     requirementStatus: statusTone,
     submittedAt: design.submittedAt || "",
     icon: "canvas",
-    owners: [ownerName.slice(0, 1) || "U"],
+    owners: [ownerName.slice(0, 1).toUpperCase() || "U"],
     ownerName,
     ownerId: design.ownerId,
     canEdit: !!design.canEdit,
@@ -725,6 +755,7 @@ function designSummaryToCard(design) {
     timeBucket: dateBucketFromISO(design.updatedAt || design.createdAt),
     pageCount: design.pageCount || 0,
     wordCount: 0,
+    searchText: design.searchText || "",
     primaryAction: design.canEdit ? "继续编辑" : "只读浏览",
   };
 }
@@ -867,6 +898,7 @@ function ManagerIcon({ name, size = 18 }) {
     test: <><path d="M9 2v6l-5 9a3 3 0 0 0 2.6 4.5h10.8A3 3 0 0 0 20 17L15 8V2" /><path d="M8 2h8" /><path d="M7 15h10" /></>,
     rocket: <><path d="M4.5 16.5c-1.5 1.3-2 3-2 5 2 0 3.7-.5 5-2" /><path d="M9 15l-2-2c.5-3 2-5.5 4.5-7.5C14 3.5 17 2.5 21.5 2.5c0 4.5-1 7.5-3 10-2 2.5-4.5 4-7.5 4.5z" /><path d="M15 8.5h.01" /></>,
     check: <><path d="M20 6L9 17l-5-5" /></>,
+    trash: <><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M6.5 6l1 14h9l1-14" /><path d="M10 11v5" /><path d="M14 11v5" /></>,
   };
   return <svg {...common}>{paths[name] || paths.document}</svg>;
 }
@@ -933,17 +965,247 @@ function ManagerSidebar({ active = "设计单", currentUser = null, onLogout = n
   );
 }
 
-function RequirementManager({ doc, onOpenCanvas, onCreate, serverCards = null, serverMode = false, scope = "mine", onScopeChange, currentUser = null, onLogout = null, loading = false }) {
+const MANAGER_LIST_GRID = "minmax(220px,1.42fr) minmax(104px,.48fr) minmax(112px,.5fr) minmax(126px,.54fr) minmax(112px,.5fr) minmax(154px,.72fr)";
+const MANAGER_FUSE_KEYS = [
+  { name: "title", weight: 0.34 },
+  { name: "titlePinyin", weight: 0.12 },
+  { name: "titlePinyinCompact", weight: 0.12 },
+  { name: "titleInitials", weight: 0.12 },
+  { name: "pageText", weight: 0.16 },
+  { name: "bodyText", weight: 0.1 },
+  { name: "bodyPinyin", weight: 0.06 },
+  { name: "bodyPinyinCompact", weight: 0.06 },
+  { name: "bodyInitials", weight: 0.06 },
+  { name: "aliases", weight: 0.12 },
+  { name: "product", weight: 0.06 },
+  { name: "status", weight: 0.04 },
+  { name: "owner", weight: 0.04 },
+  { name: "all", weight: 0.02 },
+];
+
+function useDebouncedValue(value, delay = 180) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delay);
+    return () => window.clearTimeout(timer);
+  }, [value, delay]);
+  return debounced;
+}
+
+function normalizeSearchText(value) {
+  return String(value || "").toLowerCase().replace(/[，。！？、；："'“”‘’（）()[\]{}<>《》|\\/.,!?;:\-_+*=~`@#$%^&\s]+/g, "");
+}
+
+function safePinyinText(value, pattern = "pinyin") {
+  const raw = String(value || "").slice(0, 6000);
+  if (!raw) return "";
+  try {
+    const result = pinyin(raw, { toneType: "none", type: "array", pattern });
+    return Array.isArray(result) ? result.join(" ") : String(result || "");
+  } catch {
+    try {
+      return String(pinyin(raw, { toneType: "none", pattern }) || "");
+    } catch {
+      return "";
+    }
+  }
+}
+
+function managerSearchAliases(value) {
+  const raw = String(value || "");
+  const aliases = [];
+  const add = (...items) => aliases.push(...items);
+  if (raw.includes("密码")) add("mima", "mm");
+  if (raw.includes("重置")) add("chongzhi", "cz");
+  if (raw.includes("密码") && raw.includes("重置")) add("mimachongzhi", "mmcz");
+  if (raw.includes("登录")) add("denglu", "dl");
+  if (raw.includes("注册")) add("zhuce", "zc");
+  if (raw.includes("需求")) add("xuqiu", "xq");
+  if (raw.includes("设计")) add("sheji", "sj");
+  if (raw.includes("页面")) add("yemian", "ym");
+  if (raw.includes("原型")) add("yuanxing", "yx");
+  if (raw.includes("流程")) add("liucheng", "lc");
+  if (raw.includes("评论")) add("pinglun", "pl");
+  if (raw.includes("跳转")) add("tiaozhuan", "tz");
+  if (raw.includes("完成")) add("wancheng", "wc");
+  return [...new Set(aliases)].join(" ");
+}
+
+function buildManagerSearchEntry(card) {
+  const statusTone = realRequirementStatusTone(card);
+  const status = statusStyles[statusTone]?.label || card.status || "";
+  const owner = card.ownerName || (Array.isArray(card.owners) ? card.owners.join(" ") : "");
+  const pageText = compactSearchText([card.pageText, `${card.pageCount || 0}页`]);
+  const bodyText = compactSearchText([card.description, card.searchText]);
+  const title = String(card.title || "");
+  const base = compactSearchText([title, card.product, card.project, status, owner, pageText, bodyText]);
+  const pinyinSource = compactSearchText([title, card.product, owner, bodyText.slice(0, 6000)]);
+  const titlePinyin = safePinyinText(title);
+  const bodyPinyin = safePinyinText(pinyinSource);
+  const titleInitials = normalizeSearchText(safePinyinText(title, "first"));
+  const bodyInitials = normalizeSearchText(safePinyinText(pinyinSource, "first"));
+  const aliases = managerSearchAliases(base);
+  const haystack = normalizeSearchText([base, titlePinyin, bodyPinyin, titleInitials, bodyInitials, aliases].join(" "));
+  return {
+    card,
+    id: card.id,
+    title,
+    product: String(card.product || card.project || ""),
+    status,
+    owner,
+    pageText,
+    bodyText,
+    titlePinyin,
+    titlePinyinCompact: normalizeSearchText(titlePinyin),
+    titleInitials,
+    bodyPinyin,
+    bodyPinyinCompact: normalizeSearchText(bodyPinyin),
+    bodyInitials,
+    aliases,
+    haystack,
+    all: base,
+  };
+}
+
+function managerQueryTerms(query) {
+  return String(query || "").trim().split(/\s+/).map((term) => term.trim()).filter(Boolean).slice(0, 8);
+}
+
+function directSearchBonus(entry, terms) {
+  let bonus = 0;
+  const title = normalizeSearchText(entry.title);
+  const titlePinyin = entry.titlePinyinCompact || normalizeSearchText(entry.titlePinyin);
+  const titleInitials = entry.titleInitials || "";
+  const all = entry.haystack || normalizeSearchText([entry.title, entry.product, entry.status, entry.owner, entry.pageText, entry.bodyText, entry.bodyPinyin, entry.bodyInitials, entry.aliases].join(" "));
+  terms.forEach((term) => {
+    const q = normalizeSearchText(term);
+    if (!q) return;
+    if (title === q) bonus += 0.28;
+    else if (title.includes(q)) bonus += 0.2;
+    if (titlePinyin.includes(q) || titleInitials.includes(q)) bonus += 0.16;
+    if (all.includes(q)) bonus += 0.08;
+  });
+  return bonus;
+}
+
+function directSearchScore(entry, terms) {
+  const title = normalizeSearchText(entry.title);
+  const titlePinyin = entry.titlePinyinCompact || normalizeSearchText(entry.titlePinyin);
+  const titleInitials = entry.titleInitials || "";
+  const haystack = entry.haystack || normalizeSearchText(entry.all);
+  let score = 0;
+  for (const term of terms) {
+    const q = normalizeSearchText(term);
+    if (!q) continue;
+    if (title === q) {
+      score -= 1.2;
+      continue;
+    }
+    if (title.includes(q)) {
+      score -= 0.95;
+      continue;
+    }
+    if (titlePinyin.includes(q)) {
+      score -= 0.82;
+      continue;
+    }
+    if (titleInitials.includes(q)) {
+      score -= 0.76;
+      continue;
+    }
+    const index = haystack.indexOf(q);
+    if (index >= 0) {
+      score -= 0.48;
+      score += Math.min(index, 20000) / 100000;
+      continue;
+    }
+    return null;
+  }
+  return score;
+}
+
+function fuzzySearchCards(cards, query) {
+  const terms = managerQueryTerms(query);
+  if (!terms.length) return cards;
+  const entries = cards.map(buildManagerSearchEntry);
+  const directRanked = entries
+    .map((entry, index) => {
+      const score = directSearchScore(entry, terms);
+      return score === null ? null : { entry, index, score };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.score - b.score || a.index - b.index);
+  const fuse = new Fuse(entries, {
+    includeScore: true,
+    threshold: 0.42,
+    distance: 120,
+    ignoreLocation: true,
+    minMatchCharLength: 1,
+    keys: MANAGER_FUSE_KEYS,
+  });
+  const hits = new Map();
+  terms.forEach((term) => {
+    const termResults = fuse.search(term).filter((result) => Number(result.score ?? 1) <= 0.58);
+    termResults.forEach((result) => {
+      const id = result.item.id;
+      const current = hits.get(id) || { entry: result.item, count: 0, score: 0 };
+      current.count += 1;
+      current.score += Number(result.score ?? 0.6);
+      hits.set(id, current);
+    });
+  });
+  const ranked = [...hits.values()]
+    .filter((item) => item.count >= terms.length)
+    .map((item) => ({
+      card: item.entry.card,
+      id: item.entry.id,
+      score: item.score / Math.max(1, item.count) - directSearchBonus(item.entry, terms),
+    }))
+    .sort((a, b) => a.score - b.score)
+    .map((item) => item);
+  const merged = [];
+  const seen = new Set();
+  directRanked.forEach((item) => {
+    if (seen.has(item.entry.id)) return;
+    seen.add(item.entry.id);
+    merged.push(item.entry.card);
+  });
+  ranked.forEach((item) => {
+    if (seen.has(item.id)) return;
+    seen.add(item.id);
+    merged.push(item.card);
+  });
+  return merged;
+}
+
+function HighlightedSearchText({ text, query }) {
+  const source = String(text || "");
+  const terms = managerQueryTerms(query).filter((term) => term.length >= 1);
+  const direct = terms.find((term) => source.toLowerCase().includes(term.toLowerCase()));
+  if (!direct) return source;
+  const index = source.toLowerCase().indexOf(direct.toLowerCase());
+  if (index < 0) return source;
+  return (
+    <>
+      {source.slice(0, index)}
+      <mark style={{ background: "#DBEAFE", color: C.indigo, borderRadius: 4, padding: "0 2px" }}>{source.slice(index, index + direct.length)}</mark>
+      {source.slice(index + direct.length)}
+    </>
+  );
+}
+
+function RequirementManager({ doc, onOpenCanvas, onCreate, onDelete, serverCards = null, serverMode = false, scope = "mine", onScopeChange, currentUser = null, onLogout = null, loading = false }) {
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
+  const debouncedQuery = useDebouncedValue(query, 180);
   const [dateScope, setDateScope] = useState("month");
+  const [rowMenu, setRowMenu] = useState(null);
   const cards = useMemo(() => (serverCards ? serverCards : [currentRequirementCard(doc), ...requirementSeeds]).map(withRealRequirementStatus), [doc, serverCards]);
-  const scopedCards = useMemo(() => {
-    const q = query.trim().toLowerCase();
+  const dateScopedCards = useMemo(() => {
     const passDate = (card) => matchesDateScope(card.timeBucket, dateScope);
-    const passQuery = (card) => !q || [card.title, card.description, card.product, card.project, card.status, `${card.pageCount || 0}页`].some((v) => String(v || "").toLowerCase().includes(q));
-    return cards.filter((card) => passDate(card) && passQuery(card));
-  }, [cards, dateScope, query]);
+    return cards.filter((card) => passDate(card));
+  }, [cards, dateScope]);
+  const scopedCards = useMemo(() => fuzzySearchCards(dateScopedCards, debouncedQuery), [dateScopedCards, debouncedQuery]);
   const filtered = useMemo(() => {
     if (filter === "all") return scopedCards;
     return scopedCards.filter((card) => card.statusTone === filter);
@@ -955,6 +1217,35 @@ function RequirementManager({ doc, onOpenCanvas, onCreate, serverCards = null, s
   }), [scopedCards]);
   const writingCount = cards.filter((c) => c.statusTone === "writing").length;
   const doneCount = cards.filter((c) => c.statusTone === "done").length;
+  useEffect(() => {
+    if (!rowMenu) return undefined;
+    const close = () => setRowMenu(null);
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [rowMenu]);
+  const openRowMenu = (event, card) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const width = 172;
+    const height = card?.canEdit ? 98 : 92;
+    setRowMenu({
+      card,
+      x: Math.min(event.clientX, window.innerWidth - width - 12),
+      y: Math.min(event.clientY, window.innerHeight - height - 12),
+    });
+  };
+  const runMenuAction = (event, action) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const card = rowMenu?.card;
+    setRowMenu(null);
+    action?.(card);
+  };
   return (
     <div style={{ height: "100vh", minHeight: "100vh", position: "relative", background: C.paper, backgroundImage: `radial-gradient(${C.grid} 1px, transparent 1px)`, backgroundSize: "24px 24px", color: C.ink, fontFamily: sans, overflow: "hidden" }}>
       <style>{`
@@ -1022,7 +1313,7 @@ function RequirementManager({ doc, onOpenCanvas, onCreate, serverCards = null, s
           </div>
           <div className="manager-list-scroll manager-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
             <div className="manager-list-table" style={{ minWidth: 0 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "minmax(220px,1.6fr) minmax(108px,.52fr) minmax(112px,.5fr) minmax(128px,.58fr) minmax(118px,.56fr) minmax(98px,.46fr)", alignItems: "center", minHeight: 46, padding: "0 22px", borderBottom: `1px solid ${C.line}`, background: "rgba(248,250,252,.78)", color: C.soft, fontSize: 11, fontWeight: 900, letterSpacing: ".08em", textTransform: "uppercase", position: "sticky", top: 0, zIndex: 1 }}>
+              <div style={{ display: "grid", gridTemplateColumns: MANAGER_LIST_GRID, alignItems: "center", minHeight: 46, padding: "0 22px", borderBottom: `1px solid ${C.line}`, background: "rgba(248,250,252,.78)", color: C.soft, fontSize: 11, fontWeight: 900, letterSpacing: ".08em", textTransform: "uppercase", position: "sticky", top: 0, zIndex: 1 }}>
                 <div>需求名称</div>
                 <div>产品</div>
                 <div>设计单状态</div>
@@ -1031,18 +1322,36 @@ function RequirementManager({ doc, onOpenCanvas, onCreate, serverCards = null, s
                 <div>负责人</div>
               </div>
               {filtered.map((card) => (
-                <RequirementListRow key={card.id} card={card} onOpenCanvas={onOpenCanvas} />
+                <RequirementListRow key={card.id} card={card} query={debouncedQuery} onOpenCanvas={onOpenCanvas} onContextMenu={openRowMenu} />
               ))}
               {!filtered.length && (
-                <div style={{ minHeight: 220, display: "flex", alignItems: "center", justifyContent: "center", color: C.soft, fontWeight: 800 }}>{loading ? "正在加载设计单..." : scope === "mine" ? "这里还没有你的设计单，点击右上角新建一个。" : "暂无可公开浏览的设计单"}</div>
+                <div style={{ minHeight: 220, display: "flex", alignItems: "center", justifyContent: "center", color: C.soft, fontWeight: 800 }}>{loading ? "正在加载设计单..." : debouncedQuery.trim() ? "没有找到相关设计单" : scope === "mine" ? "这里还没有你的设计单，点击右上角新建一个。" : "暂无可公开浏览的设计单"}</div>
               )}
             </div>
           </div>
-        </section>
-      </main>
-    </div>
-  );
-}
+	        </section>
+	      </main>
+      {rowMenu && typeof document !== "undefined" && createPortal((
+        <div data-manager-row-menu="1" onPointerDown={(e) => e.stopPropagation()}
+          style={{ position: "fixed", left: rowMenu.x, top: rowMenu.y, zIndex: 1000, width: 172, padding: 6, borderRadius: 14, border: `1px solid ${C.line}`, background: "rgba(255,255,255,.96)", boxShadow: "0 18px 46px rgba(15,23,42,.16)", backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)", fontFamily: sans }}>
+          <button type="button" onClick={(e) => runMenuAction(e, onOpenCanvas)}
+            style={{ width: "100%", height: 36, border: "none", borderRadius: 10, background: "transparent", color: C.ink, display: "flex", alignItems: "center", gap: 8, padding: "0 10px", fontFamily: sans, fontSize: 13, fontWeight: 800, cursor: "pointer", textAlign: "left" }}>
+            <ManagerIcon name="canvas" size={15} />
+            打开设计单
+          </button>
+          <button type="button" disabled={!rowMenu.card?.canEdit || !onDelete} onClick={(e) => runMenuAction(e, onDelete)}
+            style={{ width: "100%", height: 36, border: "none", borderRadius: 10, background: "transparent", color: rowMenu.card?.canEdit && onDelete ? C.copper : C.faint, display: "flex", alignItems: "center", gap: 8, padding: "0 10px", fontFamily: sans, fontSize: 13, fontWeight: 800, cursor: rowMenu.card?.canEdit && onDelete ? "pointer" : "not-allowed", textAlign: "left", opacity: rowMenu.card?.canEdit && onDelete ? 1 : 0.66 }}>
+            <ManagerIcon name="trash" size={15} />
+            删除设计单
+          </button>
+          {(!rowMenu.card?.canEdit || !onDelete) && (
+            <div style={{ padding: "5px 10px 4px", color: C.faint, fontSize: 11, lineHeight: 1.45, fontWeight: 750 }}>只有创建者可以删除</div>
+          )}
+        </div>
+      ), document.body)}
+	    </div>
+	  );
+	}
 function ManagerNav({ icon, label, active }) {
   return (
     <button type="button" className="manager-nav" style={{ width: "100%", border: "none", borderRadius: 12, background: active ? "rgba(239,246,255,.68)" : "transparent", color: active ? C.indigo : C.soft, minHeight: 42, padding: "0 10px", display: "flex", alignItems: "center", gap: 10, fontFamily: sans, fontSize: 12, fontWeight: 800, cursor: "pointer", transition: "background .16s,color .16s", flexShrink: 0 }}>
@@ -1051,19 +1360,21 @@ function ManagerNav({ icon, label, active }) {
     </button>
   );
 }
-function RequirementListRow({ card, onOpenCanvas }) {
+function RequirementListRow({ card, query = "", onOpenCanvas, onContextMenu }) {
   const product = getProductMeta(card.product);
   const statusTone = realRequirementStatusTone(card);
   const tone = statusStyles[statusTone] || statusStyles.writing;
   const isCurrent = card.kind === "current";
   const recentEdit = formatRecentEdit(card);
+  const ownerLabel = card.ownerName || (Array.isArray(card.owners) && card.owners.length ? card.owners.join("、") : "未设置");
+  const ownerInitial = ownerLabel.trim().slice(0, 1).toUpperCase() || "U";
   const open = () => onOpenCanvas?.(card);
   return (
-    <button type="button" className="manager-list-row" onClick={open}
-      style={{ width: "100%", border: "none", borderBottom: `1px solid ${C.lineSoft}`, background: isCurrent ? "linear-gradient(90deg,rgba(248,251,255,.72) 0%,rgba(255,255,255,.42) 72%)" : "rgba(255,255,255,.42)", cursor: "pointer", display: "grid", gridTemplateColumns: "minmax(220px,1.6fr) minmax(108px,.52fr) minmax(112px,.5fr) minmax(128px,.58fr) minmax(118px,.56fr) minmax(98px,.46fr)", alignItems: "center", minHeight: 64, padding: "0 22px", gap: 0, textAlign: "left", fontFamily: sans, color: C.ink }}>
+    <button type="button" className="manager-list-row" onClick={open} onContextMenu={(e) => onContextMenu?.(e, card)}
+      style={{ width: "100%", border: "none", borderBottom: `1px solid ${C.lineSoft}`, background: isCurrent ? "linear-gradient(90deg,rgba(248,251,255,.72) 0%,rgba(255,255,255,.42) 72%)" : "rgba(255,255,255,.42)", cursor: "pointer", display: "grid", gridTemplateColumns: MANAGER_LIST_GRID, alignItems: "center", minHeight: 64, padding: "0 22px", gap: 0, textAlign: "left", fontFamily: sans, color: C.ink }}>
       <div style={{ minWidth: 0, display: "flex", alignItems: "center" }}>
         <span style={{ minWidth: 0 }}>
-          <span style={{ display: "block", fontSize: 14, lineHeight: 1.35, fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{card.title}</span>
+          <span style={{ display: "block", fontSize: 14, lineHeight: 1.35, fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><HighlightedSearchText text={card.title} query={query} /></span>
         </span>
       </div>
       <div>
@@ -1076,10 +1387,9 @@ function RequirementListRow({ card, onOpenCanvas }) {
         <span style={{ display: "inline-flex", alignItems: "center", height: 22, borderRadius: 999, padding: "0 9px", background: "#F8FAFC", color: C.soft, border: `1px solid ${C.line}`, fontSize: 11, fontWeight: 900, whiteSpace: "nowrap" }}>{card.pageCount || 0} 页</span>
       </div>
       <div style={{ color: C.soft, fontSize: 13, fontWeight: 750, whiteSpace: "nowrap" }}>{recentEdit}</div>
-      <div style={{ display: "flex", alignItems: "center" }}>
-        {(card.owners || []).slice(0, 3).map((owner, index) => (
-          <span key={`${owner}-${index}`} style={{ width: 24, height: 24, marginLeft: index ? -7 : 0, borderRadius: 999, border: `2px solid ${C.surface}`, background: index % 2 ? "#FEF3C7" : C.indigoSoft, color: index % 2 ? "#B45309" : C.indigo, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 9.5, fontWeight: 900, zIndex: 3 - index }}>{owner}</span>
-        ))}
+      <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ width: 24, height: 24, borderRadius: 999, background: C.indigoSoft, color: C.indigo, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 9.5, fontWeight: 900, flexShrink: 0 }}>{ownerInitial}</span>
+        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: C.soft, fontSize: 13, fontWeight: 800 }}>{ownerLabel}</span>
       </div>
     </button>
   );
@@ -1287,6 +1597,7 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
   const [activeRequirement, setActiveRequirement] = useState(null);
   const [activeDesign, setActiveDesign] = useState(null);
   const [serverDesigns, setServerDesigns] = useState([]);
+  const [comments, setComments] = useState([]);
   const [managerScope, setManagerScope] = useState("mine");
   const [managerLoading, setManagerLoading] = useState(false);
   const [mode, setMode] = useState("canvas"); // canvas | doc | ai
@@ -1322,16 +1633,35 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
     }
   }, [apiClient, showToast]);
 
+  const loadDesignComments = useCallback(async (designId) => {
+    if (!apiMode || !apiClient || !designId) {
+      setComments([]);
+      return [];
+    }
+    try {
+      const result = await apiClient.listComments(designId);
+      const list = Array.isArray(result?.comments) ? result.comments : [];
+      setComments(list);
+      return list;
+    } catch (error) {
+      showToast(error.message || "评论加载失败");
+      setComments([]);
+      return [];
+    }
+  }, [apiMode, apiClient, showToast]);
+
   useEffect(() => {
     (async () => {
       if (apiMode) {
         apiClient.setCurrentDesignId(null);
         setDoc(normalizeDoc(blankDoc()));
+        setComments([]);
         refreshServerDesigns("mine");
         return;
       }
       const d = normalizeDoc((await load()) || blankDoc());
       setDoc(d);
+      setComments([]);
     })();
   }, [apiMode, apiClient, refreshServerDesigns]);
   useEffect(() => {
@@ -1407,10 +1737,11 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
     histRef.current = [];
     setDocSilent(normalized);
     setSel(null);
-    setDetail(null);
-    setActiveRequirement(null);
-    setDocFocusTarget(null);
-    setMode("canvas");
+	    setDetail(null);
+	    setActiveRequirement(null);
+	    setDocFocusTarget(null);
+	    setComments([]);
+	    setMode("canvas");
     setWorkspace("workbench");
     setSetup(openSetup);
   }, [setDocSilent]);
@@ -1434,9 +1765,10 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
         const result = await apiClient.createDesign(next);
         apiClient.setCurrentDesignId(result.design.id);
         histRef.current = [];
-        setDoc(normalizeDoc(result.doc));
-        setActiveDesign(result.design);
-        setActiveRequirement(null);
+	        setDoc(normalizeDoc(result.doc));
+	        setActiveDesign(result.design);
+	        setComments([]);
+	        setActiveRequirement(null);
         setDocFocusTarget(null);
         setSel(null);
         setDetail(null);
@@ -1482,9 +1814,10 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
         const result = await apiClient.getDesign(card.id);
         apiClient.setCurrentDesignId(card.id);
         histRef.current = [];
-        setDoc(normalizeDoc(result.doc));
-        setActiveDesign(result.design);
-        setActiveRequirement(null);
+	        setDoc(normalizeDoc(result.doc));
+	        setActiveDesign(result.design);
+	        void loadDesignComments(result.design.id);
+	        setActiveRequirement(null);
         setDocFocusTarget(null);
         setSel(null);
         setDetail(null);
@@ -1501,7 +1834,64 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
       return;
     }
     createRequirementFromSeed(card);
-  }, [apiMode, apiClient, createRequirementFromSeed, openWorkbench, showToast]);
+	  }, [apiMode, apiClient, createRequirementFromSeed, loadDesignComments, openWorkbench, showToast]);
+
+  const deleteRequirement = useCallback(async (card) => {
+    if (!apiMode || !apiClient || !card?.id) return;
+    if (!card.canEdit) {
+      showToast("只有创建者可以删除这个设计单");
+      return;
+    }
+    const ok = window.confirm(`确认删除「${card.title || "未命名设计单"}」吗？删除后这份设计单和相关上传资源将不可恢复。`);
+    if (!ok) return;
+    try {
+      await apiClient.deleteDesign(card.id);
+      if (activeDesignRef.current?.id === card.id) {
+        apiClient.setCurrentDesignId(null);
+        setActiveDesign(null);
+        setActiveRequirement(null);
+        setComments([]);
+        setDoc(normalizeDoc(blankDoc()));
+      }
+      await refreshServerDesigns(managerScope);
+      showToast("设计单已删除");
+    } catch (error) {
+      showToast(error.message || "删除设计单失败");
+    }
+  }, [apiMode, apiClient, refreshServerDesigns, managerScope, showToast]);
+
+  const addDocComment = useCallback(async ({ anchor, content }) => {
+    const text = String(content || "").trim();
+    if (!text) {
+      showToast("评论内容不能为空");
+      return null;
+    }
+    const designId = activeDesignRef.current?.id || apiClient?.getCurrentDesignId?.();
+    if (apiMode && apiClient && designId) {
+      try {
+        const result = await apiClient.createComment(designId, { anchor, content: text });
+        const comment = result?.comment;
+        if (comment) setComments((prev) => [...prev, comment]);
+        showToast("评论已添加");
+        return comment || null;
+      } catch (error) {
+        showToast(error.message || "评论添加失败");
+        return null;
+      }
+    }
+    const comment = {
+      id: uid(),
+      designId: "local",
+      authorId: currentUser?.id || "local",
+      authorName: currentUser?.displayName || LOCAL_USER_NAME,
+      anchor,
+      content: text,
+      createdAt: nowISO(),
+    };
+    setComments((prev) => [...prev, comment]);
+    showToast("评论已添加");
+    return comment;
+  }, [apiMode, apiClient, currentUser, showToast]);
 
   // 键盘快捷键(顶层只管撤销;节点删除/复制由画布处理以支持多选)
   useEffect(() => {
@@ -1528,6 +1918,7 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
           doc={doc}
           onOpenCanvas={openRequirementCanvas}
           onCreate={createBlankRequirement}
+          onDelete={deleteRequirement}
           serverCards={managerCards}
           serverMode={apiMode}
           scope={managerScope}
@@ -1602,7 +1993,7 @@ export default function PRDCanvas({ initialWorkspace = "manager", standaloneCanv
 
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
         {mode === "canvas" && <Canvas doc={doc} update={update} updateSilent={setDocSilent} pushHistory={() => { const p = docRef.current; if (p) { histRef.current.push(p); if (histRef.current.length > 60) histRef.current.shift(); } }} sel={sel} setSel={setSel} openDetail={setDetail} openDocNode={openDocNode} getClip={() => clipRef.current} setClip={(v) => { clipRef.current = v; }} readOnly={readOnly} />}
-        {mode === "doc" && <DocView doc={doc} update={update} onOpenCanvas={() => setMode("canvas")} focusNodeTarget={docFocusTarget} onFocusNodeHandled={() => setDocFocusTarget(null)} readOnly={readOnly} />}
+        {mode === "doc" && <DocView doc={doc} update={update} onOpenCanvas={() => setMode("canvas")} focusNodeTarget={docFocusTarget} onFocusNodeHandled={() => setDocFocusTarget(null)} readOnly={readOnly} comments={comments} onAddComment={addDocComment} currentUser={currentUser} />}
         {mode === "ai" && <AIViewPane doc={doc} />}
       </div>
 
@@ -3038,7 +3429,7 @@ function docTableMergeHtmlValues(targetValue, sourceValue) {
   return `${target}<br>${source}`;
 }
 
-function DocView({ doc, update, onOpenCanvas, focusNodeTarget, onFocusNodeHandled, readOnly = false }) {
+function DocView({ doc, update, onOpenCanvas, focusNodeTarget, onFocusNodeHandled, readOnly = false, comments = [], onAddComment = null, currentUser = null }) {
   const setMeta = (k, v) => { if (!readOnly) update({ ...doc, meta: { ...doc.meta, [k]: v } }); };
   const setNode = (id, patch) => { if (!readOnly) update({ ...doc, nodes: doc.nodes.map((n) => (n.id === id ? { ...n, ...patch } : n)) }); };
   const setEdge = (id, patch) => { if (!readOnly) update({ ...doc, edges: doc.edges.map((e) => (e.id === id ? { ...e, ...patch } : e)) }); };
@@ -3063,8 +3454,15 @@ function DocView({ doc, update, onOpenCanvas, focusNodeTarget, onFocusNodeHandle
     update({ ...doc, meta: { ...doc.meta, docSortMode: "flow", docOrder: [], docGroupView: nextGroupView } });
   };
   const docScrollRef = useRef(null);
+  const docArticleRef = useRef(null);
   const toolbarImageRef = useRef(null);
   const savedRangeRef = useRef(null);
+  const [commentPrompt, setCommentPrompt] = useState(null);
+  const [commentDraft, setCommentDraft] = useState(null);
+  const [hoverCommentId, setHoverCommentId] = useState(null);
+  const [commentPositions, setCommentPositions] = useState({});
+  const [commentLayerHeight, setCommentLayerHeight] = useState(0);
+  const canComment = readOnly && typeof onAddComment === "function";
   const [activeTable, setActiveTable] = useState(null);
   const activeTableRef = useRef(null);
   activeTableRef.current = activeTable;
@@ -3161,45 +3559,112 @@ function DocView({ doc, update, onOpenCanvas, focusNodeTarget, onFocusNodeHandle
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  function getActiveEditor() {
-    const active = document.activeElement;
-    if (active?.closest) {
-      const editor = active.closest("[data-rich-editor='1']");
-      if (editor) return editor;
-    }
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount) return savedRangeRef.current?.editor || null;
-    const node = sel.getRangeAt(0).commonAncestorContainer;
-    const el = node.nodeType === 1 ? node : node.parentElement;
-    return el?.closest?.("[data-rich-editor='1']") || savedRangeRef.current?.editor || null;
-  }
-  function rememberSelection() {
-    const editor = getActiveEditor();
-    const sel = window.getSelection();
-    if (editor && sel && sel.rangeCount) savedRangeRef.current = { editor, range: sel.getRangeAt(0).cloneRange() };
-    return editor;
-  }
-  function restoreSelection() {
-    const saved = savedRangeRef.current;
-    if (!saved?.editor || !saved.range) return getActiveEditor();
-    saved.editor.focus();
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(saved.range);
-    return saved.editor;
-  }
-function syncEditor(editor) {
-    if (!editor) return;
-    try {
-      editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "formatSetBlockTextDirection" }));
-    } catch {
-      editor.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-    rememberSelection();
-  }
-  function runDocCommand(type, value) {
-    if (readOnly) return;
-    const editor = restoreSelection();
+	  function getActiveEditor() {
+	    const active = document.activeElement;
+	    if (active?.closest) {
+	      const editor = active.closest("[data-rich-editor='1']");
+	      if (editor) return editor;
+	    }
+	    const sel = window.getSelection();
+	    if (sel && sel.rangeCount) {
+	      const node = sel.getRangeAt(0).commonAncestorContainer;
+	      const el = node.nodeType === 1 ? node : node.parentElement;
+	      const editor = el?.closest?.("[data-rich-editor='1']");
+	      if (editor) return editor;
+	    }
+	    return savedRangeRef.current?.editor?.isConnected ? savedRangeRef.current.editor : null;
+	  }
+	  function fallbackRichEditor() {
+	    return docScrollRef.current?.querySelector?.("[data-rich-editor='1'][contenteditable='true']") || document.querySelector("[data-rich-editor='1'][contenteditable='true']");
+	  }
+	  function editorContainsRange(editor, range) {
+	    try { return !!editor && !!range && editor.contains(range.commonAncestorContainer); } catch { return false; }
+	  }
+	  function rememberSelection() {
+	    const editor = getActiveEditor();
+	    const sel = window.getSelection();
+	    if (editor && sel && sel.rangeCount && editorContainsRange(editor, sel.getRangeAt(0))) savedRangeRef.current = { editor, range: sel.getRangeAt(0).cloneRange() };
+	    return editor;
+	  }
+	  function restoreSelection(allowFallback = false) {
+	    const saved = savedRangeRef.current;
+	    if (saved?.editor?.isConnected && editorContainsRange(saved.editor, saved.range)) {
+	      saved.editor.focus();
+	      const sel = window.getSelection();
+	      if (!sel) return saved.editor;
+	      sel.removeAllRanges();
+	      sel.addRange(saved.range);
+	      return saved.editor;
+	    }
+	    const editor = getActiveEditor() || (allowFallback ? fallbackRichEditor() : null);
+	    if (!editor) return null;
+	    editor.focus();
+	    const sel = window.getSelection();
+	    if (!sel) return editor;
+	    if (!sel.rangeCount || !editorContainsRange(editor, sel.getRangeAt(0))) {
+	      const range = document.createRange();
+	      range.selectNodeContents(editor);
+	      range.collapse(false);
+	      sel.removeAllRanges();
+	      sel.addRange(range);
+	      savedRangeRef.current = { editor, range: range.cloneRange() };
+	    }
+	    return editor;
+	  }
+	  function syncEditor(editor) {
+	    if (!editor) return;
+	    try {
+	      editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "formatSetBlockTextDirection" }));
+	    } catch {
+	      editor.dispatchEvent(new Event("input", { bubbles: true }));
+	    }
+	    rememberSelection();
+	  }
+	  function insertHtmlIntoEditor(editor, html, caretLineId) {
+	    if (readOnly || !editor) return;
+	    const safeId = caretLineId ? String(caretLineId).replace(/\\/g, "\\\\").replace(/"/g, '\\"') : "";
+	    const findCaretLine = () => safeId ? editor.querySelector(`[data-rte-caret-line="${safeId}"]`) : null;
+	    const sel = window.getSelection();
+	    if (!sel) return;
+	    let range = savedRangeRef.current?.editor === editor && editorContainsRange(editor, savedRangeRef.current.range)
+	      ? savedRangeRef.current.range.cloneRange()
+	      : null;
+	    if (!range && sel?.rangeCount && editorContainsRange(editor, sel.getRangeAt(0))) range = sel.getRangeAt(0).cloneRange();
+	    if (!range) {
+	      range = document.createRange();
+	      range.selectNodeContents(editor);
+	      range.collapse(false);
+	    }
+	    editor.focus();
+	    sel.removeAllRanges();
+	    sel.addRange(range);
+	    try { document.execCommand("insertHTML", false, html); } catch {}
+	    if (caretLineId && !findCaretLine()) {
+	      const activeRange = sel.rangeCount && editorContainsRange(editor, sel.getRangeAt(0)) ? sel.getRangeAt(0) : range;
+	      const template = document.createElement("template");
+	      template.innerHTML = html;
+	      const frag = template.content;
+	      const last = frag.lastChild;
+	      activeRange.deleteContents();
+	      activeRange.insertNode(frag);
+	      if (last) {
+	        const next = document.createRange();
+	        next.setStartAfter(last);
+	        next.collapse(true);
+	        sel.removeAllRanges();
+	        sel.addRange(next);
+	      }
+	    }
+	    const line = findCaretLine();
+	    if (line) {
+	      line.removeAttribute("data-rte-caret-line");
+	      placeCaretInsideEditableLine(editor, line);
+	    }
+	    syncEditor(editor);
+	  }
+	  function runDocCommand(type, value) {
+	    if (readOnly) return;
+	    const editor = restoreSelection();
     if (!editor) return;
     try {
       if (type === "link") {
@@ -3216,22 +3681,16 @@ function syncEditor(editor) {
     } catch {}
     syncEditor(editor);
   }
-  async function insertToolbarImage(file) {
-    if (readOnly) return;
-    if (!file) return;
-    const editor = restoreSelection();
-    if (!editor) return;
-    const data = await imageFileToManagedSrc(file, "doc-image");
-    const lineId = uid();
-    const html = `<div data-rte-image-row="1" contenteditable="false"><img src="${data}" alt="${escapeHtmlAttrValue(file.name || "")}"></div><div data-rte-text-line="1" data-rte-caret-line="${lineId}"><br></div>`;
-    try { document.execCommand("insertHTML", false, html); } catch {}
-    syncEditor(editor);
-    const line = editor.querySelector(`[data-rte-caret-line="${lineId}"]`);
-    if (line) {
-      line.removeAttribute("data-rte-caret-line");
-      placeCaretInsideEditableLine(editor, line);
-    }
-  }
+	  async function insertToolbarImage(file) {
+	    if (readOnly) return;
+	    if (!file) return;
+	    const editor = restoreSelection(true);
+	    if (!editor) return;
+	    const data = await imageFileToManagedSrc(file, "doc-image");
+	    const lineId = uid();
+	    const html = `<div data-rte-image-row="1" contenteditable="false"><img src="${data}" alt="${escapeHtmlAttrValue(file.name || "")}"></div><div data-rte-text-line="1" data-rte-caret-line="${lineId}"><br></div>`;
+	    insertHtmlIntoEditor(editor, html, lineId);
+	  }
   function runTableCommand(command, options = {}) {
     if (readOnly) return;
     const target = options.target || activeTableRef.current;
@@ -3431,6 +3890,182 @@ function syncEditor(editor) {
     }
   }
 
+  function getCommentTarget(anchor) {
+    const scroller = docScrollRef.current;
+    if (!scroller || !anchor) return null;
+    let target = null;
+    if (anchor.type === "prototype" && anchor.nodeId) {
+      const page = document.getElementById(`doc-page-${safeDomId(anchor.nodeId)}`);
+      target = page?.querySelector?.("[data-doc-proto-frame='1']") || null;
+    }
+    if (!target && anchor.sectionId) target = document.getElementById(anchor.sectionId);
+    if (!target && anchor.nodeId) target = document.getElementById(`doc-page-${safeDomId(anchor.nodeId)}`);
+    return target && scroller.contains(target) ? target : null;
+  }
+  function recomputeCommentPositions() {
+    const scroller = docScrollRef.current;
+    if (!scroller) return;
+    const scrollerRect = scroller.getBoundingClientRect();
+    const next = {};
+    comments.forEach((comment) => {
+      const anchor = comment?.anchor || {};
+      const target = getCommentTarget(anchor);
+      if (!target) return;
+      if (anchor.type === "prototype" && anchor.assetSrc) {
+        const node = doc.nodes.find((item) => item.id === anchor.nodeId);
+        if (!node?.proto || String(node.proto) !== String(anchor.assetSrc)) return;
+      }
+      if (anchor.type !== "prototype" && anchor.quote) {
+        const targetText = (target.textContent || "").replace(/\s+/g, " ").trim();
+        const quoteText = String(anchor.quote || "").replace(/\s+/g, " ").trim();
+        if (quoteText && !targetText.includes(quoteText)) return;
+      }
+      const rect = target.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) return;
+      const baseLeft = scroller.scrollLeft + rect.left - scrollerRect.left + rect.width * (Number(anchor.xPct ?? 50) / 100);
+      const baseTop = scroller.scrollTop + rect.top - scrollerRect.top + rect.height * (Number(anchor.yPct ?? 50) / 100);
+      const textOffset = anchor.type === "prototype" ? { x: 0, y: 0 } : { x: 12, y: -8 };
+      next[comment.id] = {
+        left: baseLeft + textOffset.x,
+        top: baseTop + textOffset.y,
+      };
+    });
+    setCommentPositions((prev) => {
+      const prevKeys = Object.keys(prev || {});
+      const nextKeys = Object.keys(next);
+      const same = prevKeys.length === nextKeys.length && nextKeys.every((id) => (
+        prev?.[id]
+        && Math.abs(Number(prev[id].left) - Number(next[id].left)) < 0.5
+        && Math.abs(Number(prev[id].top) - Number(next[id].top)) < 0.5
+      ));
+      return same ? prev : next;
+    });
+    const nextLayerHeight = Math.max(scroller.scrollHeight, scroller.clientHeight);
+    setCommentLayerHeight((prev) => (Math.abs(Number(prev || 0) - nextLayerHeight) < 1 ? prev : nextLayerHeight));
+  }
+  useEffect(() => {
+    if (!comments.length) {
+      setCommentPositions({});
+      return undefined;
+    }
+    const schedule = () => window.requestAnimationFrame(recomputeCommentPositions);
+    const frame = schedule();
+    const t1 = window.setTimeout(recomputeCommentPositions, 160);
+    const t2 = window.setTimeout(recomputeCommentPositions, 700);
+    window.addEventListener("resize", schedule);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      window.removeEventListener("resize", schedule);
+    };
+  }, [comments, doc.nodes, showPageTransitions, groupView]);
+  useEffect(() => {
+    if (!comments.length) return undefined;
+    const article = docArticleRef.current;
+    const scroller = docScrollRef.current;
+    if (!article || !scroller) return undefined;
+    let frame = 0;
+    const schedule = () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        recomputeCommentPositions();
+      });
+    };
+    schedule();
+    let resizeObserver = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(schedule);
+      resizeObserver.observe(article);
+      resizeObserver.observe(scroller);
+    }
+    let mutationObserver = null;
+    if (typeof MutationObserver !== "undefined") {
+      mutationObserver = new MutationObserver(schedule);
+      mutationObserver.observe(article, { childList: true, subtree: true, attributes: true, characterData: true });
+    }
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      resizeObserver?.disconnect?.();
+      mutationObserver?.disconnect?.();
+    };
+  }, [comments.length, doc.meta, doc.nodes, showPageTransitions, groupView]);
+  useEffect(() => {
+    if (canComment) return;
+    setCommentPrompt(null);
+    setCommentDraft(null);
+  }, [canComment]);
+  function buildTextCommentDraftFromSelection() {
+    if (!canComment) return null;
+    const sel = window.getSelection?.();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+    const quote = sel.toString().replace(/\s+/g, " ").trim();
+    if (!quote) return null;
+    const range = sel.getRangeAt(0);
+    const article = docArticleRef.current;
+    if (!article || !article.contains(range.commonAncestorContainer)) return null;
+    const rect = range.getBoundingClientRect();
+    if (rect.width < 1 && rect.height < 1) return null;
+    const node = range.commonAncestorContainer.nodeType === 1 ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+    const section = node?.closest?.("[data-doc-page-id],#doc-bg,#doc-goals,#doc-flow,#doc-pages") || article.querySelector("#doc-bg") || article;
+    const sectionRect = section.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const promptY = rect.top - 12;
+    const markerX = Math.min(sectionRect.right - 10, Math.max(sectionRect.left + 10, rect.right + 8));
+    const markerY = Math.min(sectionRect.bottom - 8, Math.max(sectionRect.top + 8, rect.top + Math.min(8, rect.height / 2)));
+    const nodeId = section.getAttribute?.("data-doc-page-id") || "";
+    return {
+      x: centerX,
+      y: promptY,
+      anchor: {
+        type: "text",
+        nodeId,
+        sectionId: section.id || (nodeId ? `doc-page-${safeDomId(nodeId)}` : "doc-bg"),
+        xPct: sectionRect.width ? Math.max(0, Math.min(100, ((markerX - sectionRect.left) / sectionRect.width) * 100)) : 50,
+        yPct: sectionRect.height ? Math.max(0, Math.min(100, ((markerY - sectionRect.top) / sectionRect.height) * 100)) : 50,
+        quote: quote.slice(0, 240),
+        label: "文字评论",
+      },
+    };
+  }
+  function handleDocMouseUp(e) {
+    if (!canComment) return;
+    if (e.target?.closest?.("[data-doc-comment-ui='1']")) return;
+    if (e.target?.closest?.("#doc-comments")) return;
+    window.setTimeout(() => {
+      const draft = buildTextCommentDraftFromSelection();
+      setCommentPrompt(draft);
+    }, 0);
+  }
+  function openCommentComposer(anchor, x, y) {
+    if (!canComment) return;
+    setCommentPrompt(null);
+    setCommentDraft({
+      anchor,
+      x: Math.max(18, Math.min(window.innerWidth - 340, x)),
+      y: Math.max(18, Math.min(window.innerHeight - 210, y)),
+      content: "",
+    });
+  }
+  async function submitCommentDraft(content) {
+    if (!commentDraft?.anchor) return;
+    const comment = await onAddComment?.({ anchor: commentDraft.anchor, content });
+    if (comment?.id) window.setTimeout(recomputeCommentPositions, 80);
+    setCommentDraft(null);
+    setCommentPrompt(null);
+    window.getSelection?.()?.removeAllRanges?.();
+  }
+  function focusComment(comment) {
+    if (!comment?.id) return;
+    const pos = commentPositions[comment.id];
+    if (!pos) return;
+    const scroller = docScrollRef.current;
+    if (!scroller) return;
+    const top = Math.max(0, pos.top - Math.min(180, scroller.clientHeight * 0.28));
+    try { scroller.scrollTo({ top, behavior: "smooth" }); } catch { scroller.scrollTop = top; }
+  }
+
   return (
     <div className="doc-editor-workbench" style={{ position: "absolute", inset: 0, overflow: "hidden", background: C.paper, backgroundImage: `radial-gradient(${C.grid} 1px, transparent 1px)`, backgroundSize: "20px 20px", padding: 20, display: "flex", gap: 20 }}>
       {!readOnly && <DocFormatToolbar onCommand={runDocCommand} onBeforeCommand={rememberSelection} onImage={() => { rememberSelection(); toolbarImageRef.current?.click(); }} tableActive={!!activeTable} onTableCommand={runTableCommand} />}
@@ -3447,8 +4082,8 @@ function syncEditor(editor) {
       )}
 
       <main style={{ flex: 1, minWidth: 0, height: "100%", display: "flex", flexDirection: "column", position: "relative", zIndex: 2 }}>
-        <div ref={docScrollRef} className="scl doc-hide-scrollbar" data-doc-scroll="1" style={{ flex: 1, minHeight: 0, width: "100%", background: C.surface, border: "1px solid rgba(226,232,240,.86)", borderRadius: 24, overflowY: "auto", boxShadow: "0 10px 40px -10px rgba(59,130,246,.08), 0 0 20px -5px rgba(0,0,0,.03)", position: "relative" }}>
-          <article className="doc-article" style={{ maxWidth: 1240, margin: "0 auto", padding: "72px 54px 84px", minHeight: "100%" }}>
+        <div ref={docScrollRef} className="scl doc-hide-scrollbar" data-doc-scroll="1" onMouseUpCapture={handleDocMouseUp} style={{ flex: 1, minHeight: 0, width: "100%", background: C.surface, border: "1px solid rgba(226,232,240,.86)", borderRadius: 24, overflowY: "auto", boxShadow: "0 10px 40px -10px rgba(59,130,246,.08), 0 0 20px -5px rgba(0,0,0,.03)", position: "relative" }}>
+          <article ref={docArticleRef} className="doc-article" style={{ maxWidth: 1240, margin: "0 auto", padding: "72px 54px 40px" }}>
             <DocEdit value={doc.meta.name} onChange={(v) => setMeta("name", v)} placeholder="未命名需求" readOnly={readOnly}
               style={{ fontFamily: sans, fontSize: 42, fontWeight: 800, lineHeight: 1.15, color: C.ink, letterSpacing: 0, marginBottom: 8, padding: 0 }} />
             <div style={{ display: "flex", alignItems: "center", gap: 8, color: C.faint, fontSize: 12.5, fontFamily: mono, marginBottom: 30, flexWrap: "wrap" }}>
@@ -3498,17 +4133,22 @@ function syncEditor(editor) {
 		                      mergeCellMode={mergeCellMode}
 		                      mergeHoverCell={mergeHoverCell}
 		                      onMergeHover={setMergeHoverCell}
-			                      onMergeTarget={mergeSelectedCellInto}
-			                      showPageTransitions={showPageTransitions}
-			                      readOnly={readOnly} />
-	                  ))}
-                </div>
-              ))}
-            </DocSection>
-          </article>
-        </div>
-      </main>
-      <DocToc items={tocItems} activeId={tocActive} onSelect={jumpToDocSection} doc={doc} />
+				                      onMergeTarget={mergeSelectedCellInto}
+				                      showPageTransitions={showPageTransitions}
+				                      readOnly={readOnly}
+				                      onCreateComment={canComment ? openCommentComposer : null} />
+		                  ))}
+	                </div>
+	              ))}
+	            </DocSection>
+	            <DocCommentsSummary comments={comments} commentPositions={commentPositions} onSelect={focusComment} />
+	          </article>
+	          <DocCommentLayer comments={comments} positions={commentPositions} layerHeight={commentLayerHeight} hoverId={hoverCommentId} onHover={setHoverCommentId} />
+	        </div>
+	      </main>
+	      <DocToc items={tocItems} activeId={tocActive} onSelect={jumpToDocSection} doc={doc} />
+	      {commentPrompt && <DocSelectionCommentPrompt prompt={commentPrompt} onCreate={() => openCommentComposer(commentPrompt.anchor, commentPrompt.x, commentPrompt.y)} onClose={() => setCommentPrompt(null)} />}
+	      {commentDraft && <DocCommentComposer draft={commentDraft} currentUser={currentUser} onSubmit={submitCommentDraft} onClose={() => setCommentDraft(null)} />}
       {!readOnly && sortOpen && <DocSortModal doc={doc} sortMode={sortMode} groupView={groupView} onClose={() => setSortOpen(false)} onSave={(ids, nextGroupView, orderDirty) => { saveSortOrder(ids, nextGroupView, orderDirty); setSortOpen(false); }} onRestore={(nextGroupView) => { restoreDefaultSort(nextGroupView); setSortOpen(false); }} />}
       {!readOnly && pendingCellDelete && createPortal((
         <div data-doc-cell-delete-modal="1" style={{ position: "fixed", inset: 0, zIndex: 9990, background: "rgba(15,23,42,.18)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
@@ -3527,6 +4167,129 @@ function syncEditor(editor) {
         </div>
       ), document.body)}
     </div>
+  );
+}
+
+function commentInitial(name) {
+  return String(name || "同事").trim().slice(0, 1).toUpperCase() || "U";
+}
+
+function commentAnchorLabel(comment) {
+  const anchor = comment?.anchor || {};
+  if (anchor.type === "prototype") return anchor.label || "原型图位置";
+  if (anchor.quote) return `“${anchor.quote}”`;
+  return anchor.label || "文档文字";
+}
+
+function DocSelectionCommentPrompt({ prompt, onCreate, onClose }) {
+  if (!prompt) return null;
+  return createPortal((
+    <div data-doc-comment-ui="1" style={{ position: "fixed", left: prompt.x, top: prompt.y, transform: "translate(-50%,-100%)", zIndex: 9800, display: "flex", alignItems: "center", gap: 6, padding: 5, borderRadius: 999, background: "rgba(15,23,42,.94)", boxShadow: "0 14px 34px rgba(15,23,42,.24)", fontFamily: sans }}>
+      <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={onCreate}
+        style={{ border: "none", height: 30, borderRadius: 999, padding: "0 12px", background: "#fff", color: C.ink, fontSize: 12.5, fontWeight: 850, cursor: "pointer" }}>评论</button>
+      <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={onClose}
+        style={{ border: "none", width: 26, height: 26, borderRadius: 999, background: "rgba(255,255,255,.12)", color: "#fff", fontSize: 16, cursor: "pointer", lineHeight: 1 }}>×</button>
+    </div>
+  ), document.body);
+}
+
+function DocCommentComposer({ draft, currentUser, onSubmit, onClose }) {
+  const [value, setValue] = useState("");
+  const inputRef = useRef(null);
+  useEffect(() => {
+    window.setTimeout(() => inputRef.current?.focus?.(), 0);
+  }, []);
+  if (!draft) return null;
+  const anchor = draft.anchor || {};
+  const label = anchor.type === "prototype" ? (anchor.label || "原型图位置") : (anchor.quote ? `“${anchor.quote}”` : "文档文字");
+  return createPortal((
+    <form data-doc-comment-ui="1" onSubmit={(e) => { e.preventDefault(); onSubmit(value); }}
+      style={{ position: "fixed", left: draft.x, top: draft.y, zIndex: 9900, width: 320, maxWidth: "calc(100vw - 32px)", borderRadius: 16, border: `1px solid ${C.line}`, background: "rgba(255,255,255,.98)", boxShadow: "0 22px 70px rgba(15,23,42,.2)", padding: 12, fontFamily: sans }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <span style={{ width: 26, height: 26, borderRadius: 999, background: C.indigoSoft, color: C.indigo, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 900, flexShrink: 0 }}>{commentInitial(currentUser?.displayName || LOCAL_USER_NAME)}</span>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 850, color: C.ink }}>{currentUser?.displayName || LOCAL_USER_NAME}</div>
+          <div style={{ fontSize: 11, color: C.faint, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 236 }}>{label}</div>
+        </div>
+      </div>
+      <textarea ref={inputRef} value={value} onChange={(e) => setValue(e.target.value)} placeholder="写下你的问题或建议..." rows={4}
+        style={{ width: "100%", resize: "none", border: `1px solid ${C.line}`, borderRadius: 12, padding: "9px 10px", outline: "none", fontFamily: sans, fontSize: 13, lineHeight: 1.55, color: C.ink, background: "#F8FAFC" }} />
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
+        <button type="button" onClick={onClose} style={{ height: 32, borderRadius: 10, border: `1px solid ${C.line}`, background: C.surface, color: C.soft, padding: "0 12px", fontFamily: sans, fontSize: 12.5, fontWeight: 800, cursor: "pointer" }}>取消</button>
+        <button type="submit" disabled={!value.trim()} style={{ height: 32, borderRadius: 10, border: "none", background: value.trim() ? C.indigo : C.line, color: value.trim() ? "#fff" : C.faint, padding: "0 12px", fontFamily: sans, fontSize: 12.5, fontWeight: 850, cursor: value.trim() ? "pointer" : "not-allowed" }}>提交评论</button>
+      </div>
+    </form>
+  ), document.body);
+}
+
+function DocCommentLayer({ comments, positions, layerHeight, hoverId, onHover }) {
+  const visible = comments.filter((comment) => positions[comment.id]);
+  if (!visible.length) return null;
+  return (
+    <div data-doc-comment-layer="1" style={{ position: "absolute", left: 0, top: 0, width: "100%", height: 0, overflow: "visible", pointerEvents: "none", zIndex: 8 }}>
+      {visible.map((comment) => {
+        const pos = positions[comment.id];
+        const open = hoverId === comment.id;
+        const isTextAnchor = comment?.anchor?.type !== "prototype";
+        return (
+          <button key={comment.id} type="button" data-doc-comment-dot="1"
+            onMouseEnter={() => onHover?.(comment.id)}
+            onMouseLeave={() => onHover?.(null)}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+            aria-label={`评论: ${comment.content || ""}`}
+            style={{ position: "absolute", left: pos.left, top: pos.top, width: 10, height: 10, transform: isTextAnchor ? "translate(0,-50%)" : "translate(-50%,-50%)", borderRadius: 999, border: "2px solid #fff", background: "#EF4444", boxShadow: open ? "0 0 0 6px rgba(239,68,68,.16), 0 8px 20px rgba(239,68,68,.24)" : "0 2px 8px rgba(239,68,68,.2)", cursor: "pointer", pointerEvents: "auto", padding: 0 }}>
+            {open && (
+              <span style={{ position: "absolute", left: 15, top: -10, width: 260, maxWidth: "calc(100vw - 80px)", borderRadius: 14, padding: 12, background: "rgba(15,23,42,.96)", color: "#fff", boxShadow: "0 18px 46px rgba(15,23,42,.25)", textAlign: "left", fontFamily: sans, pointerEvents: "none" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <span style={{ width: 24, height: 24, borderRadius: 999, background: C.indigo, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 900, flexShrink: 0 }}>{commentInitial(comment.authorName)}</span>
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: "block", fontSize: 12.5, fontWeight: 850, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{comment.authorName || "同事"}</span>
+                    <span style={{ display: "block", fontSize: 10.5, color: "rgba(255,255,255,.55)", whiteSpace: "nowrap" }}>{formatDocTime(comment.createdAt)}</span>
+                  </span>
+                </span>
+                <span style={{ display: "block", fontSize: 12.5, lineHeight: 1.6, color: "rgba(255,255,255,.92)" }}>{comment.content}</span>
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function DocCommentsSummary({ comments, commentPositions, onSelect }) {
+  return (
+    <section id="doc-comments" style={{ marginTop: 64, paddingTop: 28, borderTop: `1px solid ${C.lineSoft}` }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
+        <h2 style={{ margin: 0, fontFamily: sans, fontSize: 24, lineHeight: 1.25, fontWeight: 850, color: C.ink }}>全部评论 · {comments.length}</h2>
+        <span style={{ color: C.faint, fontSize: 12, fontFamily: sans }}>原内容被删除或替换后，评论会保留为历史记录</span>
+      </div>
+      {!comments.length ? (
+        <div style={{ minHeight: 74, border: `1px dashed ${C.line}`, borderRadius: 16, background: "#F8FAFC", color: C.faint, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: sans, fontSize: 13, fontWeight: 750 }}>暂无评论</div>
+      ) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {comments.map((comment) => {
+            const alive = !!commentPositions[comment.id];
+            return (
+              <button key={comment.id} type="button" disabled={!alive} onClick={() => alive && onSelect?.(comment)}
+                style={{ width: "100%", border: `1px solid ${C.line}`, borderRadius: 14, background: C.surface, padding: 12, display: "grid", gridTemplateColumns: "32px minmax(0,1fr) auto", gap: 10, alignItems: "start", textAlign: "left", fontFamily: sans, cursor: alive ? "pointer" : "default", opacity: alive ? 1 : .76 }}>
+                <span style={{ width: 32, height: 32, borderRadius: 999, background: alive ? C.indigoSoft : "#F1F5F9", color: alive ? C.indigo : C.faint, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 900 }}>{commentInitial(comment.authorName)}</span>
+                <span style={{ minWidth: 0 }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3, minWidth: 0 }}>
+                    <span style={{ fontSize: 13, fontWeight: 850, color: C.ink, whiteSpace: "nowrap" }}>{comment.authorName || "同事"}</span>
+                    <span style={{ color: C.faint, fontSize: 11.5, whiteSpace: "nowrap" }}>{formatDocTime(comment.createdAt)}</span>
+                    {!alive && <span style={{ height: 20, borderRadius: 999, padding: "0 8px", background: "#FEF2F2", color: "#DC2626", fontSize: 10.5, fontWeight: 850, display: "inline-flex", alignItems: "center" }}>原位置已变更</span>}
+                  </span>
+                  <span style={{ display: "block", color: C.soft, fontSize: 11.5, lineHeight: 1.4, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{commentAnchorLabel(comment)}</span>
+                  <span style={{ display: "block", color: C.ink, fontSize: 13, lineHeight: 1.6 }}>{comment.content}</span>
+                </span>
+                <span style={{ color: alive ? C.indigo : C.faint, fontSize: 12, fontWeight: 850, whiteSpace: "nowrap", paddingTop: 3 }}>{alive ? "定位" : "历史"}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -3786,7 +4549,7 @@ function ImagePreviewOverlay({ preview, setPreview }) {
   ), document.body);
 }
 
-function PageDocBlock({ node: n, doc, isLast, setNode, setEdge, setComp, activeTable, onTableFocus, mergeCellMode, mergeHoverCell, onMergeHover, onMergeTarget, showPageTransitions, readOnly = false }) {
+function PageDocBlock({ node: n, doc, isLast, setNode, setEdge, setComp, activeTable, onTableFocus, mergeCellMode, mergeHoverCell, onMergeHover, onMergeTarget, showPageTransitions, readOnly = false, onCreateComment = null }) {
   const transitionEdges = doc.edges.filter((e) => e.from === n.id && htmlToText(e.label).trim());
   const visibleTransitionEdges = showPageTransitions ? transitionEdges : [];
   const protoFrameRef = useRef(null);
@@ -3973,6 +4736,24 @@ function PageDocBlock({ node: n, doc, isLast, setNode, setEdge, setComp, activeT
     setProtoToolsOpen(false);
     setDocImagePreview({ src, alt, kind, ratio, scale: 1, x: 0, y: 0 });
   }
+  function openPrototypeComment(e) {
+    if (!onCreateComment) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const xPct = rect.width ? ((e.clientX - rect.left) / rect.width) * 100 : 50;
+    const yPct = rect.height ? ((e.clientY - rect.top) / rect.height) * 100 : 50;
+    onCreateComment({
+      type: "prototype",
+      nodeId: n.id,
+      sectionId: `doc-page-${safeDomId(n.id)}`,
+      xPct: Math.max(0, Math.min(100, xPct)),
+      yPct: Math.max(0, Math.min(100, yPct)),
+      quote: n.name || "未命名页面",
+      label: `${n.name || "未命名页面"}原型图`,
+      assetSrc: String(n.proto || "").slice(0, 1024),
+    }, e.clientX, e.clientY);
+  }
   function startTableColumnResize(e, boundaryIndex) {
     if (readOnly) return;
     if (e.button !== 0) return;
@@ -4044,8 +4825,9 @@ function PageDocBlock({ node: n, doc, isLast, setNode, setEdge, setComp, activeT
       </div>
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
         {n.proto && (
-          <div ref={protoFrameRef} data-doc-proto-frame="1" onClick={(e) => { e.stopPropagation(); if (readOnly) openDocImagePreview(n.proto, `${n.name || "未命名页面"}原型`, protoKindFromSrc(n.proto, n.protoKind), n.protoRatio); else setProtoToolsOpen(true); }}
-            onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); openDocImagePreview(n.proto, `${n.name || "未命名页面"}原型`, protoKindFromSrc(n.proto, n.protoKind), n.protoRatio); }}
+	          <div ref={protoFrameRef} data-doc-proto-frame="1" onClick={(e) => { e.stopPropagation(); if (readOnly) openDocImagePreview(n.proto, `${n.name || "未命名页面"}原型`, protoKindFromSrc(n.proto, n.protoKind), n.protoRatio); else setProtoToolsOpen(true); }}
+	            onContextMenu={openPrototypeComment}
+	            onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); openDocImagePreview(n.proto, `${n.name || "未命名页面"}原型`, protoKindFromSrc(n.proto, n.protoKind), n.protoRatio); }}
             title={readOnly ? "单击全屏查看原型" : "点击替换，双击全屏查看原型"}
             style={{ width: 180, flex: "0 0 180px", borderRadius: 8, border: `1px solid ${C.line}`, overflow: "hidden", background: C.lineSoft, lineHeight: 0, position: "relative", cursor: "zoom-in" }}>
             {isHtmlProto(n) ? (
@@ -4397,6 +5179,12 @@ function RichEditor({ value, onChange, placeholder, style, readOnly = false }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [preview]);
+  useEffect(() => {
+    if (!readOnly) return;
+    textRangeRef.current = null;
+    clearSelectedImage();
+    setTb(null);
+  }, [readOnly]);
 
   function emit() {
     if (readOnly) return;
@@ -4510,7 +5298,7 @@ function RichEditor({ value, onChange, placeholder, style, readOnly = false }) {
   function isBadPastedImagePlaceholder(img) {
     const src = (img.getAttribute("src") || "").trim();
     const alt = (img.getAttribute("alt") || "").trim();
-    const isDurableSrc = /^data:image\//i.test(src) || /^https?:\/\//i.test(src) || /^blob:/i.test(src);
+    const isDurableSrc = /^data:image\//i.test(src) || /^https?:\/\//i.test(src) || /^blob:/i.test(src) || /^\/api\/files\//i.test(src);
     const looksLikeFileName = /\.(?:png|jpe?g|gif|webp|bmp|svg)$/i.test(src) || /\.(?:png|jpe?g|gif|webp|bmp|svg)$/i.test(alt);
     return !src || /^file:/i.test(src) || (looksLikeFileName && !isDurableSrc);
   }
@@ -5423,43 +6211,44 @@ function FlowThumb({ doc, onOpenCanvas }) {
   const minX = Math.min(...doc.nodes.map((n) => n.x)) - pad, minY = Math.min(...doc.nodes.map((n) => n.y)) - pad;
   const maxX = Math.max(...doc.nodes.map((n) => n.x + NODE_W)) + pad, maxY = Math.max(...doc.nodes.map((n) => n.y + nh(n))) + pad + (hasBack ? 110 + routes.maxBackLane * EDGE_BACK_LANE_GAP : 0);
   const w = maxX - minX, h = maxY - minY;
+  const pct = (value, total) => `${(value / Math.max(1, total)) * 100}%`;
   return (
-    <button type="button" data-flow-thumb="1" aria-label="查看流程图"
+    <div role="button" tabIndex={0} data-flow-thumb="1" aria-label="查看流程图"
       onClick={(e) => { if (!onOpenCanvas) return; e.preventDefault(); e.stopPropagation(); onOpenCanvas(); }}
       onKeyDown={(e) => { if (!onOpenCanvas) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onOpenCanvas(); } }}
       style={{ width: "100%", padding: 0, display: "block", textAlign: "left", border: `1px solid ${C.line}`, borderRadius: 14, background: C.canvas, overflow: "hidden", cursor: onOpenCanvas ? "pointer" : "default" }}>
-      <svg viewBox={`${minX} ${minY} ${w} ${h}`} style={{ width: "100%", maxHeight: 360, display: "block" }}>
-        <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9" fill="none" stroke={C.indigo} strokeWidth="1.6" /></marker></defs>
-        {doc.edges.map((e) => {
-          const f = doc.nodes.find((n) => n.id === e.from), t = doc.nodes.find((n) => n.id === e.to);
-          if (!f || !t) return null;
-          const g = edgeGeometry(e, routes);
-          if (!g) return null;
-          return <path key={e.id} d={g.path} fill="none" stroke={C.indigo} strokeWidth="1.6" markerEnd="url(#ah2)" opacity={g.back ? "0.55" : "0.75"} strokeDasharray={g.back ? "6 4" : undefined} />;
-        })}
-        {doc.nodes.map((n, i) => {
-          const clipId = `thumb-proto-${n.id}`;
-          const mediaY = n.y;
-          const mediaRadius = 12;
-          const mediaPath = smoothRoundRectPath(NODE_W, ih(n), mediaRadius, n.x, mediaY);
+      <div style={{ position: "relative", width: "100%", aspectRatio: `${w} / ${Math.max(1, h)}`, minHeight: 180, maxHeight: 360, overflow: "hidden" }}>
+        <svg viewBox={`${minX} ${minY} ${w} ${h}`} preserveAspectRatio="none" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", display: "block", pointerEvents: "none" }}>
+          <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9" fill="none" stroke={C.indigo} strokeWidth="1.6" /></marker></defs>
+          {doc.edges.map((e) => {
+            const f = doc.nodes.find((n) => n.id === e.from), t = doc.nodes.find((n) => n.id === e.to);
+            if (!f || !t) return null;
+            const g = edgeGeometry(e, routes);
+            if (!g) return null;
+            return <path key={e.id} d={g.path} fill="none" stroke={C.indigo} strokeWidth="1.6" markerEnd="url(#ah2)" opacity={g.back ? "0.55" : "0.75"} strokeDasharray={g.back ? "6 4" : undefined} />;
+          })}
+          {doc.nodes.map((n) => {
+            if (n.proto) return null;
+            const mediaPath = smoothRoundRectPath(NODE_W, ih(n), 12, n.x, n.y);
+            return <path key={n.id} d={mediaPath} fill="#F8FAFC" stroke={C.line} strokeWidth="1.5" />;
+          })}
+        </svg>
+        {doc.nodes.map((n) => {
+          if (!n.proto) return null;
+          const html = isHtmlProto(n);
           return (
-            <g key={n.id}>
-              <clipPath id={clipId} clipPathUnits="userSpaceOnUse"><path d={mediaPath} /></clipPath>
-              <path d={mediaPath} fill="#F8FAFC" stroke={n.proto ? "none" : C.line} strokeWidth={n.proto ? 0 : 1} />
-              {n.proto && !isHtmlProto(n) && <image href={n.proto} x={n.x} y={mediaY} width={NODE_W} height={ih(n)} preserveAspectRatio="none" clipPath={`url(#${clipId})`} />}
-              {n.proto && isHtmlProto(n) && (
-                <>
-                  <rect x={n.x + 16} y={mediaY + 16} width={NODE_W - 32} height={Math.max(42, ih(n) - 32)} rx="12" fill="#FFFFFF" stroke={C.indigo} strokeWidth="1.5" opacity=".92" />
-                  <text x={n.x + NODE_W / 2} y={mediaY + ih(n) / 2 - 5} textAnchor="middle" fontSize="13" fontWeight="800" fill={C.indigo} fontFamily={sans}>HTML 原型</text>
-                  <text x={n.x + NODE_W / 2} y={mediaY + ih(n) / 2 + 15} textAnchor="middle" fontSize="10.5" fill={C.soft} fontFamily={sans}>可交互页面文件</text>
-                </>
+            <div key={n.id} data-flow-thumb-proto={html ? "html" : "image"}
+              style={{ position: "absolute", left: pct(n.x - minX, w), top: pct(n.y - minY, h), width: pct(NODE_W, w), height: pct(ih(n), h), borderRadius: 12, border: `1.5px solid ${C.line}`, overflow: "hidden", background: "#fff", boxShadow: "0 8px 22px rgba(15,23,42,.06)", pointerEvents: "none" }}>
+              {html ? (
+                <HtmlPrototypeFrame src={n.proto} title={`${n.name || "未命名页面"} HTML 原型`} ratio={n.protoRatio} />
+              ) : (
+                <img src={n.proto} alt="" draggable={false} style={{ width: "100%", height: "100%", display: "block", objectFit: "fill", WebkitUserDrag: "none" }} />
               )}
-              <path d={mediaPath} fill="none" stroke={C.line} strokeWidth="1.5" />
-            </g>
+            </div>
           );
         })}
-      </svg>
-    </button>
+      </div>
+    </div>
   );
 }
 

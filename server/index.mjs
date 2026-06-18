@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
@@ -63,6 +63,16 @@ db.exec(`
     size INTEGER NOT NULL,
     created_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS comments (
+    id TEXT PRIMARY KEY,
+    design_id TEXT NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
+    author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    anchor_type TEXT NOT NULL,
+    anchor_json TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
 `);
 
 const statements = {
@@ -77,10 +87,10 @@ const statements = {
     WHERE sessions.token = ? AND sessions.expires_at > ?
   `),
   deleteSession: db.prepare("DELETE FROM sessions WHERE token = ?"),
-  listDesigns: db.prepare(`
-    SELECT designs.id, designs.title, designs.product, designs.status, designs.owner_id, designs.created_at,
-           designs.updated_at, designs.submitted_at, users.display_name AS owner_name
-    FROM designs
+	  listDesigns: db.prepare(`
+	    SELECT designs.id, designs.title, designs.product, designs.status, designs.owner_id, designs.data_json, designs.created_at,
+	           designs.updated_at, designs.submitted_at, users.display_name AS owner_name
+	    FROM designs
     JOIN users ON users.id = designs.owner_id
     ORDER BY datetime(designs.updated_at) DESC
   `),
@@ -92,8 +102,19 @@ const statements = {
   `),
   insertDesign: db.prepare("INSERT INTO designs (id, title, product, status, owner_id, data_json, created_at, updated_at, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"),
   updateDesign: db.prepare("UPDATE designs SET title = ?, product = ?, status = ?, data_json = ?, updated_at = ?, submitted_at = ? WHERE id = ?"),
+  deleteDesign: db.prepare("DELETE FROM designs WHERE id = ?"),
   insertFile: db.prepare("INSERT INTO files (id, design_id, owner_id, kind, original_name, mime_type, relative_path, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+  deleteFilesForDesign: db.prepare("DELETE FROM files WHERE design_id = ?"),
   getFile: db.prepare("SELECT * FROM files WHERE id = ?"),
+  listComments: db.prepare(`
+    SELECT comments.*, users.display_name AS author_name
+    FROM comments
+    JOIN users ON users.id = comments.author_id
+    WHERE comments.design_id = ?
+    ORDER BY datetime(comments.created_at) ASC
+  `),
+  insertComment: db.prepare("INSERT INTO comments (id, design_id, author_id, anchor_type, anchor_json, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"),
+  deleteCommentsForDesign: db.prepare("DELETE FROM comments WHERE design_id = ?"),
 };
 
 function nowISO() {
@@ -195,10 +216,133 @@ function normalizeStatus(doc) {
   return meta.requirementStatus === "done" && meta.submittedAt ? "done" : "writing";
 }
 
+function parseStoredDoc(dataJson) {
+  let parsed = {};
+  try { parsed = JSON.parse(dataJson || "{}"); } catch {}
+  return unwrapStoredDoc(parsed);
+}
+
+function unwrapStoredDoc(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  if (Array.isArray(value.nodes) || value.schema || value.meta) return value;
+  if (value.doc && typeof value.doc === "object") return unwrapStoredDoc(value.doc);
+  if (value.data && typeof value.data === "object") return unwrapStoredDoc(value.data);
+  return value;
+}
+
+function designPageCount(doc) {
+  const candidates = [
+    doc?.nodes,
+    doc?.pages,
+    doc?.canvas?.nodes,
+    doc?.project?.nodes,
+    doc?.data?.nodes,
+  ];
+  const pages = candidates.find((items) => Array.isArray(items));
+  return pages ? pages.length : 0;
+}
+
+function htmlToPlainText(value) {
+  const raw = String(value || "");
+  if (!raw) return "";
+  if (!/[<&]/.test(raw)) return raw;
+  return raw
+    .replace(/<li[^>]*>/gi, "- ")
+    .replace(/<\/(div|p|li|h[1-6])>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildDesignSearchText(row, doc) {
+  const chunks = [
+    row.title,
+    row.product,
+    row.status === "done" && row.submitted_at ? "已完成" : "编写中",
+    row.owner_name,
+    doc?.meta?.name,
+    doc?.meta?.product,
+    doc?.meta?.background,
+    doc?.meta?.dataGoals,
+    doc?.meta?.expGoals,
+    doc?.meta?.analysisUrl,
+    ...(Array.isArray(doc?.groups) ? doc.groups.map((g) => g?.name) : []),
+  ];
+  const nodes = Array.isArray(doc?.nodes) ? doc.nodes : [];
+  nodes.forEach((node) => {
+    chunks.push(node?.name, node?.note, node?.expGoal, node?.protoName);
+    if (node?.docTableBaseCells && typeof node.docTableBaseCells === "object") {
+      chunks.push(...Object.values(node.docTableBaseCells).flat());
+    }
+    if (Array.isArray(node?.docTableRows)) {
+      node.docTableRows.forEach((rowItem) => chunks.push(rowItem?.label, ...(Array.isArray(rowItem?.cells) ? rowItem.cells : [])));
+    }
+    if (Array.isArray(node?.competitors)) {
+      node.competitors.forEach((item) => chunks.push(item?.caption));
+    }
+  });
+  const nodeById = Object.fromEntries(nodes.map((node) => [node?.id, node]).filter(([id]) => id));
+  if (Array.isArray(doc?.edges)) {
+    doc.edges.forEach((edge) => {
+      chunks.push(edge?.label, nodeById[edge?.from]?.name, nodeById[edge?.to]?.name);
+    });
+  }
+  try {
+    const comments = statements.listComments.all(row.id);
+    comments.forEach((comment) => {
+      chunks.push(comment?.content);
+      try {
+        const anchor = JSON.parse(comment?.anchor_json || "{}");
+        chunks.push(anchor?.label, anchor?.quote);
+      } catch {}
+    });
+  } catch {}
+  return chunks.map(htmlToPlainText).filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 24000);
+}
+
+function clampPct(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 50;
+  return Math.max(0, Math.min(100, n));
+}
+
+function sanitizeCommentAnchor(anchor) {
+  const raw = anchor && typeof anchor === "object" ? anchor : {};
+  const type = raw.type === "prototype" ? "prototype" : "text";
+  return {
+    type,
+    nodeId: String(raw.nodeId || "").slice(0, 120),
+    sectionId: String(raw.sectionId || "").slice(0, 160),
+    xPct: clampPct(raw.xPct),
+    yPct: clampPct(raw.yPct),
+    quote: String(raw.quote || "").trim().slice(0, 240),
+    label: String(raw.label || "").trim().slice(0, 160),
+    assetSrc: String(raw.assetSrc || "").slice(0, 1024),
+  };
+}
+
+function summarizeComment(row) {
+  let anchor = {};
+  try { anchor = JSON.parse(row.anchor_json || "{}"); } catch {}
+  return {
+    id: row.id,
+    designId: row.design_id,
+    authorId: row.author_id,
+    authorName: row.author_name || "同事",
+    anchor: sanitizeCommentAnchor(anchor),
+    content: row.content,
+    createdAt: row.created_at,
+  };
+}
+
 function summarizeDesign(row, user) {
-  let doc = null;
-  try { doc = JSON.parse(row.data_json || "{}"); } catch {}
-  const pageCount = Array.isArray(doc?.nodes) ? doc.nodes.length : 0;
+  const doc = parseStoredDoc(row.data_json);
   const updated = row.updated_at || row.created_at;
   return {
     id: row.id,
@@ -210,7 +354,8 @@ function summarizeDesign(row, user) {
     createdAt: row.created_at,
     updatedAt: updated,
     submittedAt: row.submitted_at || "",
-    pageCount,
+    pageCount: designPageCount(doc),
+    searchText: buildDesignSearchText(row, doc),
     canEdit: !!user && row.owner_id === user.id,
   };
 }
@@ -347,7 +492,7 @@ async function handleApi(req, res) {
       if (!row) return safeError(res, 404, "设计单不存在");
       return sendJson(res, 200, {
         design: summarizeDesign(row, user),
-        doc: JSON.parse(row.data_json),
+        doc: parseStoredDoc(row.data_json),
       });
     }
 
@@ -377,7 +522,49 @@ async function handleApi(req, res) {
       return sendJson(res, 200, { design: summarizeDesign(next, user), doc });
     }
 
-    const exportMatch = path.match(/^\/api\/designs\/([^/]+)\/export-md$/);
+	    if (designMatch && req.method === "DELETE") {
+	      const user = requireUser(req, res);
+	      if (!user) return;
+	      const row = statements.getDesign.get(designMatch[1]);
+	      if (!row) return safeError(res, 404, "设计单不存在");
+	      if (row.owner_id !== user.id) return safeError(res, 403, "只有创建者可以删除这个设计单");
+	      statements.deleteCommentsForDesign.run(row.id);
+	      statements.deleteFilesForDesign.run(row.id);
+	      statements.deleteDesign.run(row.id);
+	      for (const rel of [join("uploads", row.id), join("exports", row.id)]) {
+        const abs = safeStoragePath(rel);
+        if (abs && existsSync(abs)) rmSync(abs, { recursive: true, force: true });
+      }
+	      return sendJson(res, 200, { ok: true, id: row.id });
+	    }
+
+	    const commentsMatch = path.match(/^\/api\/designs\/([^/]+)\/comments$/);
+	    if (commentsMatch && req.method === "GET") {
+	      const user = requireUser(req, res);
+	      if (!user) return;
+	      const row = statements.getDesign.get(commentsMatch[1]);
+	      if (!row) return safeError(res, 404, "设计单不存在");
+	      return sendJson(res, 200, { comments: statements.listComments.all(row.id).map(summarizeComment) });
+	    }
+
+	    if (commentsMatch && req.method === "POST") {
+	      const user = requireUser(req, res);
+	      if (!user) return;
+	      const row = statements.getDesign.get(commentsMatch[1]);
+	      if (!row) return safeError(res, 404, "设计单不存在");
+	      const body = await readJson(req, 1024 * 1024);
+	      const content = String(body.content || "").trim();
+	      if (!content) return safeError(res, 400, "评论内容不能为空");
+	      if (content.length > 2000) return safeError(res, 400, "评论内容最多 2000 字");
+	      const anchor = sanitizeCommentAnchor(body.anchor);
+	      const id = randomUUID();
+	      const created = nowISO();
+	      statements.insertComment.run(id, row.id, user.id, anchor.type, JSON.stringify(anchor), content, created);
+	      const comment = statements.listComments.all(row.id).map(summarizeComment).find((item) => item.id === id);
+	      return sendJson(res, 201, { comment });
+	    }
+
+	    const exportMatch = path.match(/^\/api\/designs\/([^/]+)\/export-md$/);
     if (exportMatch && req.method === "POST") {
       const user = requireUser(req, res);
       if (!user) return;
